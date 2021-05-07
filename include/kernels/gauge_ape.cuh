@@ -72,12 +72,12 @@ namespace quda
     // Get link U
     U = arg.in(dir, linkIndexShift(x, dx, X), parity);
     
-    Stap = Stap * (arg.alpha / ((real)(2. * (3. - 1.))));
-    setIdentity(&I);
+    Stap = Stap * arg.alpha;
+    //setIdentity(&I);
 
-    TestU = I * (1. - arg.alpha) + Stap * conj(U);
+    TestU = U + Stap;
     polarSu3<real>(TestU, arg.tolerance);
-    U = TestU * U;
+    U = TestU;
     
     arg.out(dir, linkIndexShift(x, dx, X), parity) = U;
   }

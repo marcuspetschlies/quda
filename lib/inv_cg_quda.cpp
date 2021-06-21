@@ -656,9 +656,7 @@ namespace quda {
 
 	// If performing split grid deflation, we trigger the convergence
 	// procedure so that we may exit to perfrom deflation.
-	if(sqrt(r2) < maxr_deflate * param.tol_restart &&
-	   param.split_grid_deflate &&
-	   sqrt(r2 / b2) > 1e-6) {
+	if(sqrt(r2) < maxr_deflate * param.tol_restart && param.split_grid_deflate) {
 	  if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Exit split grid to deflate on the global grid: %e < %e * %e. Residual %e\n",
 							 sqrt(r2), maxr_deflate, param.tol_restart, sqrt(r2 / b2));
 	  converged = true;

@@ -184,7 +184,6 @@ void create_solver_state(void **host_source_, void**host_guess_, QudaInvertParam
   ColorSpinorParam cudaParam(*cpuParam);
   cudaParam.location = QUDA_CUDA_FIELD_LOCATION;
   cudaParam.create = QUDA_ZERO_FIELD_CREATE;
-  //cudaParam.setPrecision(inv_param->cuda_prec_eigensolver, inv_param->cuda_prec_eigensolver, true);
   cudaParam.setPrecision(inv_param->cuda_prec, inv_param->cuda_prec, true);
   // Ensure device vectors are in UKQCD basis for Wilson type fermions
   if (cudaParam.nSpin != 1) cudaParam.gammaBasis = QUDA_UKQCD_GAMMA_BASIS;
@@ -213,12 +212,10 @@ void create_solver_state(void **host_source_, void**host_guess_, QudaInvertParam
     if(inv_param->solve_type == QUDA_NORMOP_PC_SOLVE ||
        inv_param->solve_type == QUDA_NORMERR_PC_SOLVE ||
        inv_param->solve_type == QUDA_DIRECT_PC_SOLVE) sol_type = QUDA_MATPC_SOLUTION;
-    printfQuda("You hit PC solve\n");
   } else { 
     if(inv_param->solve_type == QUDA_NORMOP_SOLVE ||
        inv_param->solve_type == QUDA_NORMERR_SOLVE ||
        inv_param->solve_type == QUDA_DIRECT_SOLVE) sol_type = QUDA_MAT_SOLUTION;
-    printfQuda("You hit non PC solve\n");
   }
   
   ColorSpinorParam cuda_pc_param(nullptr, *inv_param, sol_state->host_source[0]->X(), sol_type, QUDA_CUDA_FIELD_LOCATION);
@@ -253,7 +250,7 @@ void update_solver_state_vecs(std::vector<ColorSpinorField*> &vec_out,
 			      std::vector<ColorSpinorField*> &vec_in,
 			      bool pc = false, bool parity_even = false)
 {
-  if(vec_in.size() != vec_out.size()) errorQuda("Solver state vecs have different sizes %lu %lu", vec_in.size(), vec_out.size());
+  if(vec_in.size() != vec_out.size()) errorQuda("Solver state vecs have different sizes: out=%lu in=%lu", vec_out.size(), vec_in.size());
 
   for (unsigned int i = 0; i<vec_in.size(); i++) {
     if(!pc) {
@@ -2878,9 +2875,6 @@ void deflateQuda(void **host_source, void **host_guess, QudaEigParam *eig_param,
 			    defl_space->evecs, defl_space->evals, accumulate);
     
     // Copy guess back to the host
-    printfQuda("Vectors deflated\n");
-
-    
     if(pc_solve) {
       update_solver_state_vecs(sol_state->guess, sol_state->defl_guess, true, true);
       update_solver_state_vecs(sol_state->guess, sol_state->temp_vec2, true, false);

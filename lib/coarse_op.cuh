@@ -976,6 +976,7 @@ namespace quda {
      preconditioned clover operator else in general this just aliases V
      @param V[in] Packed null-space vector accessor
      @param G[in] Fine grid link / gauge field accessor
+     @param L[in] Fine grid long link / gauge field accessor (aliases G for non-improved staggered)
      @param C[in] Fine grid clover field accessor, or Xinv accessor for the KD operator
      @param Cinv[in] Fine grid clover inverse field accessor, or Xinv accessor for the KD operator
      @param Y_[out] Coarse link field
@@ -993,9 +994,9 @@ namespace quda {
             int coarseColor, typename F, typename Ftmp, typename Vt, typename coarseGauge, typename coarseGaugeAtomic,
             typename fineGauge, typename fineClover>
   void calculateY(coarseGauge &Y, coarseGauge &X, coarseGaugeAtomic &Y_atomic, coarseGaugeAtomic &X_atomic, Ftmp &UV,
-                  F &AV, Vt &V, fineGauge &G, fineClover &C, fineClover &Cinv, GaugeField &Y_, GaugeField &X_,
+                  F &AV, Vt &V, fineGauge &G, fineGauge &L, fineGauge &Xinv, fineClover &C, fineClover &Cinv, GaugeField &Y_, GaugeField &X_,
                   GaugeField &Y_atomic_, GaugeField &X_atomic_, ColorSpinorField &uv, ColorSpinorField &av,
-                  const ColorSpinorField &v, const GaugeField &G_, const CloverField &C_, double kappa, double mass, double mu,
+                  const ColorSpinorField &v, const GaugeField &G_, const GaugeField &L_, const GaugeField &XInv_, const CloverField &C_, double kappa, double mass, double mu,
                   double mu_factor, QudaDiracType dirac, QudaMatPCType matpc, bool need_bidirectional,
                   const int *fine_to_coarse, const int *coarse_to_fine, bool use_mma = false)
   {
@@ -1046,7 +1047,7 @@ namespace quda {
     //Calculate UV and then VUV for each dimension, accumulating directly into the coarse gauge field Y
 
     using Arg = CalculateYArg<from_coarse, Float,fineSpin,coarseSpin,fineColor,coarseColor,coarseGauge,coarseGaugeAtomic,fineGauge,F,Ftmp,Vt,fineClover>;
-    Arg arg(Y, X, Y_atomic, X_atomic, UV, AV, G, V, C, Cinv, kappa, mass,
+    Arg arg(Y, X, Y_atomic, X_atomic, UV, AV, G, L, Xinv, V, C, Cinv, kappa, mass,
 	    mu, mu_factor, x_size, xc_size, geo_bs, spin_bs, fine_to_coarse, coarse_to_fine, bidirectional_links);
     CalculateY<location, Arg> y(arg, v, Y_, X_, Y_atomic_, X_atomic_, use_mma);
 

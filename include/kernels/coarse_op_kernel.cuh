@@ -43,9 +43,11 @@ namespace quda {
     fineSpinor AV;           /** Temporary that stores the clover * spinor field product */
 
     const fineGauge U;       /** Fine grid link field */
+    const fineGauge L;       /** Fine grid long link field */
+    const fineGauge K;       /** Fine grid Kahler-Dirac inverse */
     const fineSpinorV V;     /** Fine grid spinor field */
-    const fineClover C;      /** Fine grid clover field, or Xinv for coarsening the optimized KD op */
-    const fineClover Cinv;   /** Fine grid clover field, or Xinv for coarsening the optimize KD op */
+    const fineClover C;      /** Fine grid clover field */
+    const fineClover Cinv;   /** Fine grid clover field */
 
     int_fastdiv x_size[QUDA_MAX_DIM];   /** Dimensions of fine grid */
     int xc_size[QUDA_MAX_DIM];  /** Dimensions of coarse grid */
@@ -122,12 +124,12 @@ namespace quda {
 
     CalculateYArg(coarseGauge &Y, coarseGauge &X, 
       coarseGaugeAtomic &Y_atomic, coarseGaugeAtomic &X_atomic,
-      fineSpinorTmp &UV, fineSpinor &AV, const fineGauge &U, const fineSpinorV &V,
+      fineSpinorTmp &UV, fineSpinor &AV, const fineGauge &U, const fineGauge &L, const fineGauge &K, const fineSpinorV &V,
       const fineClover &C, const fineClover &Cinv, double kappa, double mass, double mu, double mu_factor,
       const int *x_size_, const int *xc_size_, int *geo_bs_, int spin_bs_,
       const int *fine_to_coarse, const int *coarse_to_fine, bool bidirectional)
       : Y(Y), X(X), Y_atomic(Y_atomic), X_atomic(X_atomic),
-      UV(UV), AV(AV), U(U), V(V), C(C), Cinv(Cinv), spin_bs(spin_bs_), spin_map(),
+      UV(UV), AV(AV), U(U), L(L), K(K), V(V), C(C), Cinv(Cinv), spin_bs(spin_bs_), spin_map(),
       kappa(static_cast<Float>(kappa)), mass(static_cast<Float>(mass)), mu(static_cast<Float>(mu)), mu_factor(static_cast<Float>(mu_factor)),
       fineVolumeCB(V.VolumeCB()), coarseVolumeCB(X.VolumeCB()),
       fine_to_coarse(fine_to_coarse), coarse_to_fine(coarse_to_fine),

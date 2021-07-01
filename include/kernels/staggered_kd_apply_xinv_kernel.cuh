@@ -105,7 +105,7 @@ namespace quda {
             const int neighbor_idx = linkIndexShift(x_c, offset, arg.dim);
             const Link Xinv = Arg::dagger ? arg.xInv(my_corner, neighbor_idx, nbr_parity) : arg.xInv(nbr_corner, coord.x_cb, parity);
             const Vector in = arg.in(neighbor_idx, nbr_parity);
-            out += ((Arg::dagger ? conj(Xinv) : Xinv) * in);
+            out = mv_add(Arg::dagger ? conj(Xinv) : Xinv, in, out);
             nbr_corner++;
           }
         }

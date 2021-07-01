@@ -387,7 +387,8 @@ namespace quda {
     gParam.pad = 0;
 
     // the precision of KD inverse can be lower than the input gauge fields
-    gParam.setPrecision( override_prec );
+    // latter true is to force FLOAT2
+    gParam.setPrecision( override_prec, true );
 
     GaugeField* Xinv = new cudaGaugeField(gParam);
 

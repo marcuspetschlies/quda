@@ -578,7 +578,7 @@ namespace quda {
 
       };
 
-      template <typename Float, int nSpin, int nColor, int nVec, QudaFieldOrder order, typename storeFloat = Float,
+      template <typename Float, int nSpin_, int nColor_, int nVec, QudaFieldOrder order, typename storeFloat = Float,
                 typename ghostFloat = storeFloat, bool disable_ghost = false, bool block_float = false>
       class FieldOrderCB
       {
@@ -587,6 +587,9 @@ namespace quda {
       public:
         /** Does this field type support ghost zones? */
         static constexpr bool supports_ghost_zone = true;
+
+        static constexpr int nSpin = nSpin_;
+        static constexpr int nColor = nColor_;
 
       protected:
         complex<storeFloat> *v;

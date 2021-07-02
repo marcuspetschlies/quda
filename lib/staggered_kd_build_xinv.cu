@@ -26,7 +26,7 @@ namespace quda {
 
     long long flops() const { 
       // only real work is multiplying the mass by two
-      return arg.coarseVolumeCB*coarseSpin*coarseColor;
+      return 2*arg.coarseVolumeCB*coarseSpin*coarseColor;
     }
 
     long long bytes() const
@@ -375,7 +375,7 @@ namespace quda {
 
 
   // Allocates and calculates the inverse KD block, returning Xinv
-  GaugeField* AllocateAndBuildStaggeredKahlerDiracInverse(const cudaGaugeField &gauge, const double mass, const QudaPrecision override_prec)
+  GaugeField* AllocateAndBuildStaggeredKahlerDiracInverse(const cudaGaugeField &gauge, const double mass)
   {
     GaugeFieldParam gParam(gauge);
     gParam.reconstruct = QUDA_RECONSTRUCT_NO;
@@ -386,9 +386,8 @@ namespace quda {
     gParam.nFace = 0;
     gParam.pad = 0;
 
-    // the precision of KD inverse can be lower than the input gauge fields
     // latter true is to force FLOAT2
-    gParam.setPrecision( override_prec, true );
+    gParam.setPrecision( gauge.Precision(), true );
 
     GaugeField* Xinv = new cudaGaugeField(gParam);
 

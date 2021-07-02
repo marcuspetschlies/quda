@@ -161,7 +161,7 @@ namespace quda {
     if (out.SiteSubset() != QUDA_FULL_SITE_SUBSET || in.SiteSubset() != QUDA_FULL_SITE_SUBSET)
       errorQuda("There is no meaning to applying the KD inverse to a single parity field");
     
-    checkPrecision(out, in);
+    checkPrecision(out, in, Xinv);
 
     // Not using instantiate for now, since we support
     // KD precision < spinor precision. Need to figure out

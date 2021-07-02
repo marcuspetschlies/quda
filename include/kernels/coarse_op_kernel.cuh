@@ -16,10 +16,14 @@ namespace quda {
   typedef int storeType;
 
   template <bool from_coarse_, typename Float_, int fineSpin_, int coarseSpin_, int fineColor_, int coarseColor_, typename coarseGauge,
-            typename coarseGaugeAtomic, typename fineGauge, typename fineSpinor, typename fineSpinorTmp,
-            typename fineSpinorV, typename fineClover>
+            typename coarseGaugeAtomic, typename fineGauge, typename fineSpinorAV_, typename fineSpinorUV_,
+            typename fineSpinorV_, typename fineClover>
   struct CalculateYArg {
     using Float = Float_;
+
+    using fineSpinorV = fineSpinorV_;
+    using fineSpinorUV = fineSpinorUV_;
+    using fineSpinorAV = fineSpinorAV_;
 
     static constexpr int fineSpin = fineSpin_;
     static constexpr int coarseSpin = coarseSpin_;
@@ -33,14 +37,16 @@ namespace quda {
     static constexpr bool from_coarse = from_coarse_;
     static constexpr bool is_mma_compatible = coarseGauge::is_mma_compatible;
 
+    static constexpr bool from_kd_op = ((fineSpin == 1) && (fineSpinorV::nSpin == fineSpinorAV::nSpin));
+
     coarseGauge Y;           /** Computed coarse link field */
     coarseGauge X;           /** Computed coarse clover field */
 
     coarseGaugeAtomic Y_atomic;    /** Y atomic accessor used for computation before conversion to final format */
     coarseGaugeAtomic X_atomic;    /** X atomic accessor used for computation before conversion to final format */
 
-    fineSpinorTmp UV;        /** Temporary that stores the fine-link * spinor field product */
-    fineSpinor AV;           /** Temporary that stores the clover * spinor field product */
+    fineSpinorUV UV;        /** Temporary that stores the fine-link * spinor field product */
+    fineSpinorAV AV;           /** Temporary that stores the clover * spinor field product */
 
     const fineGauge U;       /** Fine grid link field */
     const fineGauge L;       /** Fine grid long link field */
@@ -124,7 +130,7 @@ namespace quda {
 
     CalculateYArg(coarseGauge &Y, coarseGauge &X, 
       coarseGaugeAtomic &Y_atomic, coarseGaugeAtomic &X_atomic,
-      fineSpinorTmp &UV, fineSpinor &AV, const fineGauge &U, const fineGauge &L, const fineGauge &K, const fineSpinorV &V,
+      fineSpinorUV &UV, fineSpinorAV &AV, const fineGauge &U, const fineGauge &L, const fineGauge &K, const fineSpinorV &V,
       const fineClover &C, const fineClover &Cinv, double kappa, double mass, double mu, double mu_factor,
       const int *x_size_, const int *xc_size_, int *geo_bs_, int spin_bs_,
       const int *fine_to_coarse, const int *coarse_to_fine, bool bidirectional)
@@ -159,7 +165,7 @@ namespace quda {
     int coord[4];
     getCoords(coord, x_cb, arg.x_size, parity);
 
-    constexpr int uvSpin = Arg::fineSpin * (Arg::from_coarse ? 2 : 1);
+    constexpr int uvSpin = Arg::fineSpin * (Arg::from_coarse ? 2 : 1) * (Arg::fineSpin == 1 ? Arg::fineSpinorUV::nSpin : 1);
     constexpr int nFace = 1; // to do: nFace == 3 version for long links
 
     using complex = complex<typename Arg::Float>;
@@ -185,7 +191,7 @@ namespace quda {
     } else if ( arg.comm_dim[dim] && (coord[dim] + nFace >= arg.x_size[dim]) ) {
       int ghost_idx = ghostFaceIndex<1>(coord, arg.x_size, dim, nFace);
 
-      if (!Arg::from_coarse) {
+      if (Arg::fineSpin == 4) {
 
         for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
           auto U = make_tile_A<complex, false>(tile);
@@ -197,7 +203,7 @@ namespace quda {
           } // Fine color columns
         }   // Fine spin (tensor)
 
-      } else {
+      } else if (Arg::fineSpin == 2) {
 
         for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
           for (int s_col=0; s_col<Arg::fineSpin; s_col++) {
@@ -213,12 +219,51 @@ namespace quda {
           }  //Fine color columns
         }    // Fine Spin
 
-      } // Arg::from_coarse
+      } else if (Arg::fineSpin == 1) {
+
+        auto W = make_tile_B<complex, true>(tile);
+        if (!Arg::from_kd_op) {
+
+          // non-KD op
+          for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+            auto U = make_tile_A<complex, false>(tile);
+            U.load(arg.U, dim, parity, x_cb, i0, k);
+            // loading from V == AV, which has nSpin == 1
+            W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, 0, k, j0);
+            UV[0].mma_nn(U, W);
+          }   // Fine color (tensor)
+        } else {
+          // KD op, need to keep track of if we're loading from V or AV
+          if (dir == QUDA_FORWARDS) {
+            for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+              auto U = make_tile_A<complex, false>(tile);
+              U.load(arg.U, dim, parity, x_cb, i0, k);
+              // loading from V
+              W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, 0, k, j0);
+              // store to a different component of UV depending on if we're gathering
+              // from even, odd
+              UV[(parity+1)&1].mma_nn(U, W);
+            }
+          } else if (dir == QUDA_BACKWARDS) {
+            for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+              auto U = make_tile_A<complex, false>(tile);
+              U.load(arg.U, dim, parity, x_cb, i0, k);
+              // loading from AV, need to be mindful of if we're loading from a "from even" or "from odd" site
+              for (int s = 0; s < Arg::fineSpinorAV::nSpin; s++) {
+                W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, s, k, j0);
+                UV[s].mma_nn(U, W);
+              }
+            }
+          }
+
+        }
+        
+      }
 
     } else {
       int y_cb = linkIndexP1(coord, arg.x_size, dim);
 
-      if (!Arg::from_coarse) {
+      if (Arg::fineSpin == 4) {
 
         for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
           auto U = make_tile_A<complex, false>(tile);
@@ -230,7 +275,7 @@ namespace quda {
           }  //Fine color columns
         }    // Fine Spin
 
-      } else {
+      } else if (Arg::fineSpin == 2) {
 
         for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
           for (int s_col = 0; s_col < Arg::fineSpin; s_col++) {
@@ -245,11 +290,53 @@ namespace quda {
             } // which chiral block
           }  //Fine Spin
         }    // Fine color columns
+      } else if (Arg::fineSpin == 1) {
+
+        auto W = make_tile_B<complex, false>(tile);
+        if (!Arg::from_kd_op) {
+
+          // non-KD op
+          for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+
+            auto U = make_tile_A<complex, false>(tile);
+            U.load(arg.U, dim, parity, x_cb, i0, k);
+            // loading from V == AV, which has nSpin == 1
+            W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, 0, k, j0);
+            UV[0].mma_nn(U, W);
+          }   // Fine color (tensor)
+        } else {
+          // KD op, need to keep track of if we're loading from V or AV
+          if (dir == QUDA_FORWARDS) {
+            for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+              auto U = make_tile_A<complex, false>(tile);
+              U.load(arg.U, dim, parity, x_cb, i0, k);
+              // loading from V
+              W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, 0, k, j0);
+              // store to a different component of UV depending on if we're gathering
+              // from even, odd
+              UV[(parity+1)&1].mma_nn(U, W);
+            }
+          } else if (dir == QUDA_BACKWARDS) {
+            for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+              auto U = make_tile_A<complex, false>(tile);
+              U.load(arg.U, dim, parity, x_cb, i0, k);
+              // loading from AV, need to be mindful of if we're loading from a "from even" or "from odd" site
+              for (int s = 0; s < Arg::fineSpinorAV::nSpin; s++) {
+                W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, s, k, j0);
+                UV[s].mma_nn(U, W);
+              }
+            }
+          }
+
+        }
+
       }
 
     }
 
+    
     for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
+
   } // computeUV
 
   template<int dim, QudaDirection dir, typename Arg>
@@ -700,37 +787,40 @@ namespace quda {
 
         const int s_c_row = arg.spin_map(0, parity);
 
-        // the column is the opposite contribution
+        // for the non-KD operator, the column is the opposite contribution
         const int s_c_col = arg.spin_map(0, 1-parity);
+        // but, in general, we need to gather from both spins of V or AV
+        //for (int s_c_col = 0; s_c_col < Arg::coarseSpin; s_c_col++) {
 
-        for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color 
+          for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color 
 
 
-          if (dir == QUDA_BACKWARDS) {
+            if (dir == QUDA_BACKWARDS) {
 
-            auto V = make_tile_At<complex, false>(tile);
-            V.loadCS(arg.V, 0, 0, parity, x_cb, 0, k, i0);
+              auto V = make_tile_At<complex, false>(tile);
+              V.loadCS(arg.V, 0, 0, parity, x_cb, 0, k, i0);
 
-            // here UV is really UAV
-            auto UV = make_tile_B<complex, false>(tile);
-            UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
+              // here UV is really UAV
+              auto UV = make_tile_B<complex, false>(tile);
+              UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
 
-            vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(V, UV);
+              vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(V, UV);
 
-          } else {
+            } else {
 
-            auto AV = make_tile_At<complex, false>(tile);
-            AV.loadCS(arg.AV, 0, 0, parity, x_cb, 0, k, i0);
-            AV *= static_cast<Float>(-1.);
+              auto AV = make_tile_At<complex, false>(tile);
+              AV.loadCS(arg.AV, 0, 0, parity, x_cb, 0, k, i0);
+              AV *= static_cast<Float>(-1.);
 
-            auto UV = make_tile_B<complex, false>(tile);
-            UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
+              auto UV = make_tile_B<complex, false>(tile);
+              UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
 
-            vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(AV, UV);
+              vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(AV, UV);
+
+            }
 
           }
-
-        }
+        //}
       } // Arg::fineSpin == 4 or 1
 
     } else { // fine grid operator is a coarse operator

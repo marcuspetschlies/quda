@@ -244,7 +244,7 @@ namespace quda {
 
   }
 
-  template <typename Float, typename vFloat, int fineColor, int fineSpin, int coarseColor, int coarseSpin>
+  template <typename Float, typename vFloat, int fineColor, int fineSpin, int coarseColor, int coarseSpin, int uvSpin>
   void aggregateStaggeredY(GaugeField &Y, GaugeField &X, const Transfer &T, const GaugeField &g, const GaugeField &l,
                             const GaugeField &XinvKD, double mass, QudaDiracType dirac, QudaMatPCType matpc)
   {
@@ -255,7 +255,7 @@ namespace quda {
     ColorSpinorParam UVparam(T.Vectors(location));
     UVparam.create = QUDA_ZERO_FIELD_CREATE;
     UVparam.location = location;
-    UVparam.nSpin = 2 * fineSpin; // technically unneccessary for coarsening the non-KD op
+    UVparam.nSpin = uvSpin;
     UVparam.setPrecision(T.Vectors(location).Precision());
     UVparam.mem_type = Y.MemType(); // allocate temporaries to match coarse-grid link field
 
@@ -296,7 +296,7 @@ namespace quda {
       if (g.FieldOrder() != gOrder) errorQuda("Unsupported field order %d\n", g.FieldOrder());
 
       using V = typename colorspinor::FieldOrderCB<Float,fineSpin,fineColor,coarseColor,csOrder,vFloat>;
-      using F = typename colorspinor::FieldOrderCB<Float,2*fineSpin,fineColor,coarseColor,csOrder,vFloat>;
+      using F = typename colorspinor::FieldOrderCB<Float,uvSpin,fineColor,coarseColor,csOrder,vFloat>;
       using gFine = typename gauge::FieldOrder<Float,fineColor,1,gOrder>;
       using gCoarse = typename gauge::FieldOrder<Float,coarseColor*coarseSpin,coarseSpin,gOrder,true,vFloat>;
       using gCoarseAtomic = typename gauge::FieldOrder<Float,coarseColor*coarseSpin,coarseSpin,gOrder,true,storeType>;
@@ -329,7 +329,7 @@ namespace quda {
       if (g.FieldOrder() != gOrder) errorQuda("Unsupported field order %d\n", g.FieldOrder());
 
       using V = typename colorspinor::FieldOrderCB<Float, fineSpin, fineColor, coarseColor, csOrder, vFloat, vFloat, false, false>;
-      using F = typename colorspinor::FieldOrderCB<Float, 2*fineSpin, fineColor, coarseColor, csOrder, vFloat, vFloat, false, false>; // will need 2x the spin components for the KD op
+      using F = typename colorspinor::FieldOrderCB<Float, uvSpin, fineColor, coarseColor, csOrder, vFloat, vFloat, false, false>; // will need 2x the spin components for the KD op
       using gFine =  typename gauge::FieldOrder<Float,fineColor,1,gOrder,true,Float>;
       using gCoarse = typename gauge::FieldOrder<Float, coarseColor * coarseSpin, coarseSpin, gOrder, true, vFloat>;
       using gCoarseAtomic = typename gauge::FieldOrder<Float, coarseColor * coarseSpin, coarseSpin, gOrder, true, storeType>;
@@ -362,6 +362,22 @@ namespace quda {
     if (av != nullptr && &T.Vectors(location) != av) delete av;
     if (uv != nullptr) delete uv;
 
+  }
+
+  // template on UV spin, which can be 1 for the non-KD ops but needs to be 2 for the KD op
+  template <typename Float, typename vFloat, int fineColor, int fineSpin, int coarseColor, int coarseSpin>
+  void aggregateStaggeredY(GaugeField &Y, GaugeField &X, const Transfer &T, const GaugeField &g, const GaugeField &l,
+                           const GaugeField &XinvKD, double mass, QudaDiracType dirac, QudaMatPCType matpc)
+  {
+    if (dirac == QUDA_STAGGERED_DIRAC || dirac == QUDA_ASQTAD_DIRAC) {
+      // uvSpin == 1
+      aggregateStaggeredY<Float, vFloat, fineColor, fineSpin, coarseColor, coarseSpin, 1>(Y, X, T, g, l, XinvKD, mass, dirac, matpc);
+    } else if (dirac == QUDA_STAGGEREDKD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) {
+      // uvSpin == 2
+      aggregateStaggeredY<Float, vFloat, fineColor, fineSpin, coarseColor, coarseSpin, 2>(Y, X, T, g, l, XinvKD, mass, dirac, matpc);
+    } else {
+      errorQuda("Unexpected dirac type %d\n", dirac);
+    }
   }
 
   // template on the number of coarse degrees of freedom, branch between naive K-D 

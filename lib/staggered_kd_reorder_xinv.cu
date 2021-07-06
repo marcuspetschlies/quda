@@ -42,7 +42,7 @@ template <typename Float, int fineColor, int coarseSpin, int coarseColor, typena
       xInvCoarse(xInvCoarse)
     {
 #ifdef JITIFY
-      create_jitify_program("kernels/staggered_kd_geometry_reorder_xinv_kernel.cuh");
+      create_jitify_program("kernels/staggered_kd_reorder_xinv_kernel.cuh");
 #endif
       strcpy(aux, compile_type_str(meta));
       strcpy(aux, meta.AuxString());

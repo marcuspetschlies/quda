@@ -37,7 +37,7 @@ namespace quda {
     static constexpr bool from_coarse = from_coarse_;
     static constexpr bool is_mma_compatible = coarseGauge::is_mma_compatible;
 
-    static constexpr bool from_kd_op = ((fineSpin == 1) && (fineSpinorV::nSpin == fineSpinorAV::nSpin));
+    static constexpr bool from_kd_op = ((fineSpin == 1) && (fineSpinorV::nSpin != fineSpinorAV::nSpin));
 
     coarseGauge Y;           /** Computed coarse link field */
     coarseGauge X;           /** Computed coarse clover field */
@@ -106,6 +106,7 @@ namespace quda {
     int dim;           // which dimension are we working on
     QudaDirection dir; // which direction are working on
     int dim_index;     // which direction / dimension we are working on
+    bool kd_dagger;    // whether we're applying the dagger of the KD inverse field or not
 
     // tile used for computeUV
     static constexpr int tile_height_uv = fineColor % 4 == 0 ? 4 : fineColor % 3 == 0 ? 3 : fineColor % 2 ? 2 : 1;
@@ -235,20 +236,21 @@ namespace quda {
         } else {
           // KD op, need to keep track of if we're loading from V or AV
           if (dir == QUDA_FORWARDS) {
+            // loading from V, only need to load from "one" spin
             for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
               auto U = make_tile_A<complex, false>(tile);
               U.load(arg.U, dim, parity, x_cb, i0, k);
-              // loading from V
               W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, 0, k, j0);
               // store to a different component of UV depending on if we're gathering
               // from even, odd
               UV[(parity+1)&1].mma_nn(U, W);
             }
           } else if (dir == QUDA_BACKWARDS) {
+            // loading from AV, need to be mindful of if we're loading from a "from even" or "from odd" site
             for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
               auto U = make_tile_A<complex, false>(tile);
               U.load(arg.U, dim, parity, x_cb, i0, k);
-              // loading from AV, need to be mindful of if we're loading from a "from even" or "from odd" site
+
               for (int s = 0; s < Arg::fineSpinorAV::nSpin; s++) {
                 W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, s, k, j0);
                 UV[s].mma_nn(U, W);
@@ -307,20 +309,21 @@ namespace quda {
         } else {
           // KD op, need to keep track of if we're loading from V or AV
           if (dir == QUDA_FORWARDS) {
+            // loading from V, only need to load from "one" spin
             for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
               auto U = make_tile_A<complex, false>(tile);
               U.load(arg.U, dim, parity, x_cb, i0, k);
-              // loading from V
+
               W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, 0, k, j0);
               // store to a different component of UV depending on if we're gathering
               // from even, odd
               UV[(parity+1)&1].mma_nn(U, W);
             }
           } else if (dir == QUDA_BACKWARDS) {
+            // loading from AV, need to be mindful of if we're loading from a "from even" or "from odd" site
             for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
               auto U = make_tile_A<complex, false>(tile);
               U.load(arg.U, dim, parity, x_cb, i0, k);
-              // loading from AV, need to be mindful of if we're loading from a "from even" or "from odd" site
               for (int s = 0; s < Arg::fineSpinorAV::nSpin; s++) {
                 W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, s, k, j0);
                 UV[s].mma_nn(U, W);
@@ -334,7 +337,7 @@ namespace quda {
 
     }
 
-    
+#pragma unroll
     for (int s = 0; s < uvSpin; s++) UV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
 
   } // computeUV
@@ -370,7 +373,7 @@ namespace quda {
     int jc = blockDim.z*blockIdx.z + threadIdx.z; // tiled coarse color
     if (jc >= arg.uvTile.N_tiles) return;
 
-    if (dir == QUDA_FORWARDS || dir == QUDA_IN_PLACE) // only for preconditioned clover is V != AV, will need extra logic for staggered KD
+    if (dir == QUDA_FORWARDS || dir == QUDA_IN_PLACE) // only for preconditioned clover, staggered KD is V != AV
       computeUV<dim,dir>(arg, arg.V, parity, x_cb, ic * arg.uvTile.M, jc * arg.uvTile.N);
     else
       computeUV<dim,dir>(arg, arg.AV, parity, x_cb, ic * arg.uvTile.M, jc * arg.uvTile.N);
@@ -703,6 +706,115 @@ namespace quda {
   }
 
   /**
+     Calculates the matrix A V^{s,c'}(x) = \sum_{c,d} K^{c}_{d}(x) * V^{s,c}(x+d)
+     Where: s = fine spin, c' = coarse color, c = fine color, d = hypercube corner
+     See staggered_kd_apply_xinv_kernel.cuh for reference
+  */
+  template <bool dagger, typename Arg>
+  __device__ __host__ inline void computeKV(Arg &arg, int parity, int x_cb, int nbr_parity, int ic_c)
+  {
+    using Float = typename Arg::Float;
+    using Vector = ColorSpinor<Float, Arg::fineColor, 1>;
+    using Link = Matrix<complex<Float>, Arg::fineColor>;
+
+    // Get coordinates
+    constexpr int nDim = 4;
+    Coord<nDim> coord;
+    coord.x_cb = x_cb;
+    coord.X = getCoordsCB(coord, x_cb, arg.x_size, arg.x_size[0] / 2, parity); // arg.X_size[0] / 2 should be an int_fastdiv on its own
+
+    // Get location of unit corner of hypercube
+    int x_c[nDim];
+#pragma unroll
+    for (int d = 0; d < nDim; d++)
+      x_c[d] = 2 * (coord[d] / 2);
+
+    Vector out;
+
+    // only needed for dagger
+    // global parity == parity w/in the KD block
+    const int my_corner = 8*parity+4*(coord[3]%2)+2*(coord[2]%2)+(coord[1]%2);
+
+    // Begin accumulating into the output vector
+    // start at 0 -> store in spin 0 (even source)
+    // start at 8 -> store in spin 1 (odd source)
+    int nbr_corner = (nbr_parity == 0) ? 0 : 8;
+
+#pragma unroll
+    for (int nbr_t = 0; nbr_t < 2; nbr_t++) {
+#pragma unroll
+      for (int nbr_z = 0; nbr_z < 2; nbr_z++) {
+#pragma unroll
+        for (int nbr_y = 0; nbr_y < 2; nbr_y++) {
+          const int offset[nDim] = { (nbr_parity + nbr_t + nbr_z + nbr_y) & 1, nbr_y, nbr_z, nbr_t };
+          const int nbr_x_cb = linkIndexShift(x_c, offset, arg.x_size);
+
+          // Load Xinv link
+          Link Xinv;
+#pragma unroll
+          for (int ic_f = 0; ic_f < Arg::fineColor; ic_f++) {
+#pragma unroll
+            for (int jc_f = 0; jc_f < Arg::fineColor; jc_f++) {
+              Xinv(ic_f, jc_f) = dagger ? arg.K(my_corner, nbr_parity, nbr_x_cb, 0, 0, ic_f, jc_f) : arg.K(nbr_corner, parity, x_cb, 0, 0, ic_f, jc_f);
+            }
+          }
+
+          // Load spinor
+          Vector in;
+#pragma unroll
+          for (int jc_f = 0; jc_f < Arg::fineColor; jc_f++) {
+            in(0, jc_f) = arg.V(nbr_parity, nbr_x_cb, 0, jc_f, ic_c);
+          }
+
+          out = mv_add(dagger ? conj(Xinv) : Xinv, in, out);
+          nbr_corner++;
+
+        }
+      }
+    }
+
+    // And we're done
+#pragma unroll
+    for (int ic_f = 0; ic_f < Arg::fineColor; ic_f++) {
+      // nbr_parity -> coarse spin
+      arg.AV(parity, x_cb, nbr_parity, ic_f, ic_c) = out(0, ic_f);
+    }
+
+  } // computeKV
+
+  template <bool kd_dagger, typename Arg> void ComputeKVCPU(Arg &arg)
+  {
+    for (int parity=0; parity<2; parity++) {
+#pragma omp parallel for
+      for (int x_cb=0; x_cb<arg.fineVolumeCB; x_cb++) {
+        for (int src_parity = 0; src_parity < 2; src_parity++) { // Loop over source parities
+
+          for (int ic_c = 0; ic_c < Arg::coarseColor; ic_c++) { // coarse color
+            computeKV<kd_dagger>(arg, parity, x_cb, src_parity, ic_c);
+          }
+        }
+      } // c/b volume
+    }   // parity
+  }
+
+  template <bool kd_dagger, typename Arg>
+  __global__ void ComputeKVGPU(Arg arg)
+  {
+    int x_cb = blockDim.x*blockIdx.x + threadIdx.x;
+    if (x_cb >= arg.fineVolumeCB) return;
+
+    int parities = blockDim.y * blockIdx.y + threadIdx.y;
+    if (parities >= 4) return;
+    int src_parity = parities % 2; // source parity == coarse spin
+    int parity = parities / 2;
+
+    int ic_c = blockDim.z * blockIdx.z + threadIdx.z; // coarse color
+    if (ic_c >= Arg::coarseColor) return;
+
+    computeKV<kd_dagger>(arg, parity, x_cb, src_parity, ic_c);
+  }
+
+  /**
      @brief Do a single (AV)^\dagger * UV product, where for preconditioned
      clover, AV correspond to the clover inverse multiplied by the
      packed null space vectors, else AV is simply the packed null
@@ -721,109 +833,151 @@ namespace quda {
     using TileType = typename Arg::vuvTileType;
     auto &tile = arg.vuvTile;
 
-    if (!Arg::from_coarse) {
-     
-      if (Arg::fineSpin == 4) { // fine grid is top level Wilson type
+    if (Arg::fineSpin == 4 && !Arg::from_coarse) { // fine grid is top level Wilson type
 
 #pragma unroll
-        for (int s = 0; s < Arg::fineSpin; s++) { // Loop over fine spin
+      for (int s = 0; s < Arg::fineSpin; s++) { // Loop over fine spin
 
-          //Spin part of the color matrix.  Will always consist
-          //of two terms - diagonal and off-diagonal part of
-          //P_mu = (1+/-\gamma_mu)
+        //Spin part of the color matrix.  Will always consist
+        //of two terms - diagonal and off-diagonal part of
+        //P_mu = (1+/-\gamma_mu)
 
-          const int s_c_row = arg.spin_map(s,parity); // Coarse spin row index
+        const int s_c_row = arg.spin_map(s,parity); // Coarse spin row index
 
-          // Use Gamma to calculate off-diagonal coupling and
-          // column index.  Diagonal coupling is always 1.
-          // If computing the backwards (forwards) direction link then
-          // we desire the positive (negative) projector
+        // Use Gamma to calculate off-diagonal coupling and
+        // column index.  Diagonal coupling is always 1.
+        // If computing the backwards (forwards) direction link then
+        // we desire the positive (negative) projector
 
-          const int s_col = gamma.getcol(s);
-          const int s_c_col = arg.spin_map(s_col,parity); // Coarse spin col index
+        const int s_col = gamma.getcol(s);
+        const int s_c_col = arg.spin_map(s_col,parity); // Coarse spin col index
 
 #pragma unroll
-          for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color
-            if (dir == QUDA_BACKWARDS) {
-              auto V = make_tile_At<complex, false>(tile);
-              V.loadCS(arg.V, 0, 0, parity, x_cb, s, k, i0);
+        for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color
+          if (dir == QUDA_BACKWARDS) {
+            auto V = make_tile_At<complex, false>(tile);
+            V.loadCS(arg.V, 0, 0, parity, x_cb, s, k, i0);
 
-              // here UV is really UAV
-              //Diagonal Spin
-              auto UV = make_tile_B<complex, false>(tile);
-              UV.loadCS(arg.UV, 0, 0, parity, x_cb, s, k, j0);
-              vuv[s_c_row*Arg::coarseSpin+s_c_row].mma_tn(V, UV);
+            // here UV is really UAV
+            //Diagonal Spin
+            auto UV = make_tile_B<complex, false>(tile);
+            UV.loadCS(arg.UV, 0, 0, parity, x_cb, s, k, j0);
+            vuv[s_c_row*Arg::coarseSpin+s_c_row].mma_tn(V, UV);
 
-              //Off-diagonal Spin (backward link / positive projector applied)
-              auto gammaV = make_tile_A<complex, false>(tile);
-              for (int i = 0; i < TileType::K; i++)
-                for (int j = 0; j < TileType::M; j++) { gammaV(j, i) = gamma.apply(s, conj(V(i, j))); }
-              UV.loadCS(arg.UV, 0, 0, parity, x_cb, s_col, k, j0);
-              vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_nn(gammaV, UV);
-            } else {
-              auto AV = make_tile_At<complex, false>(tile);
-              AV.loadCS(arg.AV, 0, 0, parity, x_cb, s, k, i0);
+            //Off-diagonal Spin (backward link / positive projector applied)
+            auto gammaV = make_tile_A<complex, false>(tile);
+            for (int i = 0; i < TileType::K; i++)
+              for (int j = 0; j < TileType::M; j++) { gammaV(j, i) = gamma.apply(s, conj(V(i, j))); }
+            UV.loadCS(arg.UV, 0, 0, parity, x_cb, s_col, k, j0);
+            vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_nn(gammaV, UV);
+          } else {
+            auto AV = make_tile_At<complex, false>(tile);
+            AV.loadCS(arg.AV, 0, 0, parity, x_cb, s, k, i0);
 
-              auto UV = make_tile_B<complex, false>(tile);
-              UV.loadCS(arg.UV, 0, 0, parity, x_cb, s, k, j0);
+            auto UV = make_tile_B<complex, false>(tile);
+            UV.loadCS(arg.UV, 0, 0, parity, x_cb, s, k, j0);
 
-              //Diagonal Spin
-              vuv[s_c_row*Arg::coarseSpin+s_c_row].mma_tn(AV, UV);
+            //Diagonal Spin
+            vuv[s_c_row*Arg::coarseSpin+s_c_row].mma_tn(AV, UV);
 
-              //Off-diagonal Spin (forward link / negative projector applied)
-              auto gammaAV = make_tile_A<complex, false>(tile);
+            //Off-diagonal Spin (forward link / negative projector applied)
+            auto gammaAV = make_tile_A<complex, false>(tile);
 
-              for (int i = 0; i < TileType::K; i++)
-                for (int j = 0; j < TileType::M; j++) { gammaAV(j, i) = -gamma.apply(s, conj(AV(i, j))); }
-              UV.loadCS(arg.UV, 0, 0, parity, x_cb, s_col, k, j0);
-              vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_nn(gammaAV, UV);
-            }
-          } // Fine color
-        }
-      } else { // Arg::fineSpin == 1
-        
-        // This is for staggered/asqtad only
-        // the KD op will even to even, odd to odd terms
+            for (int i = 0; i < TileType::K; i++)
+              for (int j = 0; j < TileType::M; j++) { gammaAV(j, i) = -gamma.apply(s, conj(AV(i, j))); }
+            UV.loadCS(arg.UV, 0, 0, parity, x_cb, s_col, k, j0);
+            vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_nn(gammaAV, UV);
+          } // dir backwards or forwards
+        } // Fine color
+      } // fine spin
+      // end fine Wilson type
+    } else if (Arg::fineSpin == 1 && !Arg::from_coarse) { // Arg::fineSpin == 1
 
+      if (!Arg::from_kd_op) {
+
+        // This is for staggered/asqtad only where all terms simply
+        // even and odd (off-diagonal)
         const int s_c_row = arg.spin_map(0, parity);
-
-        // for the non-KD operator, the column is the opposite contribution
         const int s_c_col = arg.spin_map(0, 1-parity);
-        // but, in general, we need to gather from both spins of V or AV
-        //for (int s_c_col = 0; s_c_col < Arg::coarseSpin; s_c_col++) {
 
-          for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color 
+        for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color 
 
+          if (dir == QUDA_BACKWARDS) {
 
-            if (dir == QUDA_BACKWARDS) {
+            auto V = make_tile_At<complex, false>(tile);
+            V.loadCS(arg.V, 0, 0, parity, x_cb, 0, k, i0);
+
+            // here UV is really UAV
+            auto UV = make_tile_B<complex, false>(tile);
+            UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
+
+            vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(V, UV);
+
+          } else {
+
+            auto AV = make_tile_At<complex, false>(tile);
+            AV.loadCS(arg.AV, 0, 0, parity, x_cb, 0, k, i0);
+            AV *= static_cast<Float>(-1.);
+
+            auto UV = make_tile_B<complex, false>(tile);
+            UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
+
+            vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(AV, UV);
+
+          } // dir forwards or backwards
+
+        } // fine color
+        // end staggered or asqtad
+      } else {
+        
+        // For the KD op, we need to tie together both even and odd
+
+        if (dir == QUDA_BACKWARDS) {
+          const int s_c_row = arg.spin_map(0, parity);
+
+          // for backwards, we're tieing together <V^\dagger A U^\dagger | V>
+          // we need all s_c_row, s_c_col combinations
+          for (int s_c_col = 0; s_c_col < Arg::coarseSpin; s_c_col++) {
+
+            for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color 
 
               auto V = make_tile_At<complex, false>(tile);
               V.loadCS(arg.V, 0, 0, parity, x_cb, 0, k, i0);
 
               // here UV is really UAV
               auto UV = make_tile_B<complex, false>(tile);
-              UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
+              UV.loadCS(arg.UV, 0, 0, parity, x_cb, s_c_col, k, j0);
 
               vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(V, UV);
 
-            } else {
+            } // fine spin
+          } // coarse spin (fine source parity)
+          // end backwards direction
+        } else {
+          // for forwards, we're tieing together <V^\dag A | U V>, so we only need
+          // one component of UV
+          int s_c_col = arg.spin_map(0, (parity+1)&1);
 
+          for (int s_c_row = 0; s_c_row < Arg::coarseSpin; s_c_row++) {
+            for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color 
+
+              // for forwards, we're tieing together <V^\dag A | U V>
               auto AV = make_tile_At<complex, false>(tile);
-              AV.loadCS(arg.AV, 0, 0, parity, x_cb, 0, k, i0);
+              AV.loadCS(arg.AV, 0, 0, parity, x_cb, s_c_row, k, i0);
               AV *= static_cast<Float>(-1.);
 
               auto UV = make_tile_B<complex, false>(tile);
-              UV.loadCS(arg.UV, 0, 0, parity, x_cb, 0, k, j0);
+              UV.loadCS(arg.UV, 0, 0, parity, x_cb, s_c_col, k, j0);
 
               vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(AV, UV);
 
-            }
-
+            } // coarse spin (fine source parity)
           }
-        //}
-      } // Arg::fineSpin == 4 or 1
-
-    } else { // fine grid operator is a coarse operator
+        }
+        // end staggered-kd, asqtad-kd
+      }
+      // end fine staggered-type
+    } else if (Arg::fineSpin == 2 && Arg::from_coarse) { // fine grid operator is a coarse operator
 
 #pragma unroll
       for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color
@@ -836,11 +990,11 @@ namespace quda {
             auto UV = make_tile_B<complex, false>(tile);
             UV.loadCS(arg.UV, 0, 0, parity, x_cb, s_col*Arg::fineSpin+s, k, j0);
             vuv[s*Arg::coarseSpin+s_col].mma_tn(AV, UV);
-          } //Fine color
-        } //Fine spin
-      }
-
-    } // Arg::from_coarse
+          } // fine spin column
+        } // fine spin column
+      } // color tile
+      // end coarse coarse
+    }
 
   }
 

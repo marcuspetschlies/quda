@@ -1425,9 +1425,15 @@ namespace quda {
       y.setComputeType(COMPUTE_STAGGEREDMASS);
       y.apply(0);
     } else if (dirac == QUDA_STAGGEREDKD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) {
-      if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Computing staggered mass times KD inverse contribution to coarse clover (FIXME NOT IMPLEMENTED)\n");
-      //y.setComputeType(COMPUTE_STAGGEREDMASS);
-      //y.apply(0);
+      if (arg.mass != static_cast<Float>(0.)) {
+        // We can write coarsening the coarse KD op as ( K^dag V) . (V)
+        y.setDimension(-1);
+        y.setDirection(QUDA_IN_PLACE);
+
+        if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Computing staggered mass times KD inverse contribution to coarse clover\n");
+        y.setComputeType(COMPUTE_VUV);
+        y.apply(0);
+      }
     } else {  //Otherwise, we just have to add the identity matrix
       if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Summing diagonal contribution to coarse clover\n");
       y.setComputeType(COMPUTE_DIAGONAL);

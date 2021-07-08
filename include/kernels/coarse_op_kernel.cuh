@@ -953,7 +953,7 @@ namespace quda {
             } // fine spin
           } // coarse spin (fine source parity)
           // end backwards direction
-        } else {
+        } else if (dir == QUDA_FORWARDS) {
           // for forwards, we're tieing together <V^\dag A | U V>, so we only need
           // one component of UV
           int s_c_col = arg.spin_map(0, (parity+1)&1);
@@ -972,6 +972,23 @@ namespace quda {
               vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(AV, UV);
 
             } // coarse spin (fine source parity)
+          }
+        } else {
+          // dir == QUDA_IN_PLACE; this is actually <V^\dag A^\dag | V>
+          const int s_c_col = arg.spin_map(0, parity);
+
+          for (int s_c_row = 0; s_c_row < Arg::coarseSpin; s_c_row++) {
+            for (int k = 0; k < TileType::k; k += TileType::K) { // Sum over fine color
+
+              auto AV = make_tile_At<complex, false>(tile);
+              AV.loadCS(arg.AV, 0, 0, parity, x_cb, s_c_row, k, i0);
+              AV *= static_cast<Float>(2.)*arg.mass;
+
+              auto V = make_tile_B<complex, false>(tile);
+              V.loadCS(arg.V, 0, 0, parity, x_cb, 0, k, j0);
+
+              vuv[s_c_row*Arg::coarseSpin+s_c_col].mma_tn(AV, V);
+            }
           }
         }
         // end staggered-kd, asqtad-kd

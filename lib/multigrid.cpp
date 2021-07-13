@@ -438,11 +438,12 @@ namespace quda
       diracParam.mu_factor = param.mg_global.mu_factor[param.level + 1] - param.mg_global.mu_factor[param.level];
 
       // Need to figure out if we need to force bi-directional build. If any previous level (incl this one) was
-      // preconditioned, we have to force bi-directional builds.
+      // preconditioned, or a KD op, we have to force bi-directional builds.
       diracParam.need_bidirectional = QUDA_BOOLEAN_FALSE;
       for (int i = 0; i <= param.level; i++) {
-        if (param.mg_global.coarse_grid_solution_type[i] == QUDA_MATPC_SOLUTION
-            && param.mg_global.smoother_solve_type[i] == QUDA_DIRECT_PC_SOLVE) {
+        if ((param.mg_global.coarse_grid_solution_type[i] == QUDA_MATPC_SOLUTION
+            && param.mg_global.smoother_solve_type[i] == QUDA_DIRECT_PC_SOLVE) ||
+            (param.mg_global.transfer_type[i] == QUDA_TRANSFER_OPTIMIZED_KD)) {
           diracParam.need_bidirectional = QUDA_BOOLEAN_TRUE;
         }
       }

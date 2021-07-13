@@ -1858,11 +1858,14 @@ void milcSetMultigridParam(milcMultigridPack *mg_pack, QudaPrecision host_precis
 
   mg_param.use_mma = QUDA_BOOLEAN_FALSE; // TODO: set to false, for now.
 
+  // bake in some values for the optimized solve
+  bool optimized_build = true;
+
   for (int i = 0; i < mg_param.n_level; i++) {
 
     if (i == 0) {
       for (int j = 0; j < 4; j++) {
-        mg_param.geo_block_size[i][j] = 2; // Kahler-Dirac blocking
+        mg_param.geo_block_size[i][j] = optimized_build ? 1 : 2; // Kahler-Dirac blocking
       }
     } else {
       for (int j = 0; j < 4; j++) { mg_param.geo_block_size[i][j] = input_struct.geo_block_size[i][j]; }
@@ -1894,7 +1897,7 @@ void milcSetMultigridParam(milcMultigridPack *mg_pack, QudaPrecision host_precis
     mg_param.spin_block_size[i] = 1;
     // change this to refresh fields when mass or links change
     mg_param.setup_maxiter_refresh[i] = 0; // setup_maxiter_refresh[i];
-    mg_param.n_vec[i] = (i == 0) ? 24 : input_struct.nvec[i];
+    mg_param.n_vec[i] = (i == 0) ? (optimized_build ? 3 : 24) : input_struct.nvec[i];
     mg_param.n_block_ortho[i] = 2; // n_block_ortho[i];                          // number of times to Gram-Schmidt
     mg_param.precision_null[i] = input_struct.preconditioner_precision; // precision to store the null-space basis
     mg_param.smoother_halo_precision[i]
@@ -1907,7 +1910,7 @@ void milcSetMultigridParam(milcMultigridPack *mg_pack, QudaPrecision host_precis
 
     // top level: coarse vs optimized KD, otherwise standard
     // aggregation. FIXME optimized
-    mg_param.transfer_type[i] = (i == 0) ? QUDA_TRANSFER_COARSE_KD : QUDA_TRANSFER_AGGREGATE;
+    mg_param.transfer_type[i] = (i == 0) ? (optimized_build ? QUDA_TRANSFER_OPTIMIZED_KD : QUDA_TRANSFER_COARSE_KD) : QUDA_TRANSFER_AGGREGATE;
 
     // set the coarse solver wrappers including bottom solver
     mg_param.coarse_solver[i] = input_struct.coarse_solver[i];
@@ -1934,7 +1937,7 @@ void milcSetMultigridParam(milcMultigridPack *mg_pack, QudaPrecision host_precis
     // from test routines: // smoother_solve_type[i];
     switch (i) {
     case 0: mg_param.smoother_solve_type[0] = QUDA_DIRECT_SOLVE; break;
-    case 1: mg_param.smoother_solve_type[1] = QUDA_DIRECT_PC_SOLVE; break;
+    case 1: mg_param.smoother_solve_type[1] = (optimized_build ? QUDA_DIRECT_PC_SOLVE : QUDA_DIRECT_SOLVE); break;
     default: mg_param.smoother_solve_type[i] = input_struct.coarse_solve_type[i]; break;
     }
 
@@ -2006,7 +2009,7 @@ void milcSetMultigridParam(milcMultigridPack *mg_pack, QudaPrecision host_precis
     } else if (i == 1) {
 
       // Always this for now.
-      mg_param.coarse_grid_solution_type[i] = QUDA_MATPC_SOLUTION;
+      mg_param.coarse_grid_solution_type[i] = optimized_build ? QUDA_MAT_SOLUTION : QUDA_MATPC_SOLUTION;
     } else {
 
       if (input_struct.coarse_solve_type[i] == QUDA_DIRECT_SOLVE) {

@@ -286,6 +286,8 @@ namespace quda {
     bool need_bidirectional = false;
     if (dirac == QUDA_STAGGEREDKD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) need_bidirectional = true;
 
+    const int nFace = (dirac == QUDA_ASQTAD_DIRAC || dirac == QUDA_ASQTADPC_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) ? 3 : 1;
+
     if (Y.Location() == QUDA_CPU_FIELD_LOCATION) {
 
       constexpr QudaFieldOrder csOrder = QUDA_SPACE_SPIN_COLOR_FIELD_ORDER;
@@ -303,9 +305,9 @@ namespace quda {
 
       const ColorSpinorField &v = T.Vectors(Y.Location());
 
-      V vAccessor(const_cast<ColorSpinorField&>(v));
-      F uvAccessor(*uv); // will need 2x the spin components for the KD op
-      F avAccessor(*av);
+      V vAccessor(const_cast<ColorSpinorField&>(v), nFace);
+      F uvAccessor(*uv, nFace); // will need 2x the spin components for the KD op
+      F avAccessor(*av, nFace);
       gFine gAccessor(const_cast<GaugeField&>(g));
       gFine lAccessor(const_cast<GaugeField&>(g));
       gFine xinvAccessor(const_cast<GaugeField&>(XinvKD));
@@ -336,9 +338,9 @@ namespace quda {
 
       const ColorSpinorField &v = T.Vectors(Y.Location());
 
-      V vAccessor(const_cast<ColorSpinorField &>(v));
-      F uvAccessor(*uv); // will need 2x the spin components for the KD op
-      F avAccessor(*av);
+      V vAccessor(const_cast<ColorSpinorField &>(v), nFace);
+      F uvAccessor(*uv, nFace); // will need 2x the spin components for the KD op
+      F avAccessor(*av, nFace);
       gFine gAccessor(const_cast<GaugeField &>(g));
       gFine lAccessor(const_cast<GaugeField &>(l));
       gFine xinvAccessor(const_cast<GaugeField&>(XinvKD));
@@ -497,7 +499,7 @@ namespace quda {
     if (dirac == QUDA_ASQTADKD_DIRAC && &longGauge == &XinvKD)
       errorQuda("Dirac type is %d but long links and KD inverse fields alias", dirac);
 
-    if ((dirac == QUDA_ASQTAD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) && XinvKD.Reconstruct() != QUDA_RECONSTRUCT_NO)
+    if ((dirac == QUDA_STAGGEREDKD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) && XinvKD.Reconstruct() != QUDA_RECONSTRUCT_NO)
       errorQuda("Invalid reconstruct %d for KD inverse field", XinvKD.Reconstruct());
 
     GaugeField *U = location == QUDA_CUDA_FIELD_LOCATION ? const_cast<cudaGaugeField*>(&gauge) : nullptr;

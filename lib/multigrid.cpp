@@ -884,13 +884,35 @@ namespace quda
     spinorNoise(*tmp_coarse, *rng, QUDA_NOISE_UNIFORM);
 #endif
 
-    // the three-hop terms break the verification b/c the coarse ops don't have the long links baked in
-    // need a more robust fix to this
-    if ((param.transfer_type == QUDA_TRANSFER_AGGREGATE || param.transfer_type == QUDA_TRANSFER_COARSE_KD)
-        && diracSmoother->getDiracType() != QUDA_ASQTAD_DIRAC && diracSmoother->getDiracType() != QUDA_ASQTADPC_DIRAC
-        && diracSmoother->getDiracType() != QUDA_ASQTADKD_DIRAC) {
+    // put a non-trivial vector on the fine level as well
+    transfer->P(*tmp1, *tmp_coarse);
 
-      transfer->P(*tmp1, *tmp_coarse);
+    // the three-hop terms in ASQTAD can break the verification depending on how we're coarsening the operator
+    // and if the aggregate size is too small in a direction
+    bool can_verify = true;
+
+    if (param.transfer_type == QUDA_TRANSFER_OPTIMIZED_KD && (diracSmoother->getDiracType() == QUDA_STAGGERED_DIRAC || diracSmoother->getDiracType() == QUDA_STAGGEREDPC_DIRAC || diracSmoother->getDiracType() == QUDA_STAGGEREDKD_DIRAC)) {
+      // If we're doing an optimized build with the staggered operator, we need to skip the verify on level 0
+      can_verify = false;
+      if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Intentionally skipping staggered -> staggered KD verify because it's not a \"real\" coarsen\n");
+    } else if (diracSmoother->getDiracType() == QUDA_ASQTAD_DIRAC || diracSmoother->getDiracType() == QUDA_ASQTADKD_DIRAC || diracSmoother->getDiracType() == QUDA_ASQTADPC_DIRAC) {
+      // If we're doing anything with the asqtad operator, the long links can make verification difficult
+
+      if (param.transfer_type == QUDA_TRANSFER_COARSE_KD) {
+        can_verify = false;
+        if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Using the naively coarsened KD operator with asqtad long links, skipping verify...\n");
+      } else if (param.transfer_type == QUDA_TRANSFER_AGGREGATE || param.transfer_type == QUDA_TRANSFER_OPTIMIZED_KD) {
+        // need to see if the aggregate is smaller than 3 in any direction
+        for (int d = 0; d < 4; d++) {
+          if (param.mg_global.geo_block_size[param.level][d] < 3) {
+            can_verify = false;
+            if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Aggregation geo_block_size[%d] = %d is less than 3, skipping verify for asqtad coarsen...\n", d, param.mg_global.geo_block_size[param.level][d]);
+          }
+        }
+      }
+    }
+
+    if (can_verify) {
 
       if (param.coarse_grid_solution_type == QUDA_MATPC_SOLUTION && param.smoother_solve_type == QUDA_DIRECT_PC_SOLVE) {
         double kappa = diracResidual->Kappa();
@@ -953,8 +975,6 @@ namespace quda
         printfQuda("L2 norms: Emulated = %e, Native = %e, relative deviation = %e\n", norm2(*x_coarse), r_nrm, deviation);
 
       if (deviation > tol) errorQuda("failed, deviation = %e (tol=%e)", deviation, tol);
-    } else {
-      if (getVerbosity() >= QUDA_VERBOSE) printfQuda("...skipping check due to long links\n"); // asqtad operator only
     }
 
     // check the preconditioned operator construction on the lower level if applicable

@@ -167,7 +167,7 @@ namespace quda {
     getCoords(coord, x_cb, arg.x_size, parity);
 
     constexpr int uvSpin = Arg::fineSpin * (Arg::from_coarse ? 2 : 1) * (Arg::fineSpin == 1 ? Arg::fineSpinorUV::nSpin : 1);
-    constexpr int nFace = 1; // to do: nFace == 3 version for long links
+    constexpr int nFace = 1; // nFace == 3 case for long links is handled in computeLV
 
     using complex = complex<typename Arg::Float>;
     using TileType = typename Arg::uvTileType;
@@ -190,7 +190,7 @@ namespace quda {
         }  //Fine Spin
       }    // Fine color columns
     } else if ( arg.comm_dim[dim] && (coord[dim] + nFace >= arg.x_size[dim]) ) {
-      int ghost_idx = ghostFaceIndex<1>(coord, arg.x_size, dim, nFace);
+      int ghost_idx = Arg::fineSpin == 1 ? ghostFaceIndexStaggered<1>(coord, arg.x_size, dim, nFace) : ghostFaceIndex<1>(coord, arg.x_size, dim, nFace);
 
       if (Arg::fineSpin == 4) {
 
@@ -351,7 +351,7 @@ namespace quda {
       for (int x_cb=0; x_cb<arg.fineVolumeCB; x_cb++) {
         for (int ic = 0; ic < TileType::m; ic += TileType::M)   // fine color
           for (int jc = 0; jc < TileType::n; jc += TileType::N) // coarse color
-            if (dir == QUDA_FORWARDS || dir == QUDA_IN_PLACE) // only for preconditioned clover is V != AV, will need extra logic for staggered KD
+            if (dir == QUDA_FORWARDS || dir == QUDA_IN_PLACE) // only for preconditioned clover, staggered LD is V != AV
               computeUV<dim,dir>(arg, arg.V, parity, x_cb, ic, jc);
             else
               computeUV<dim,dir>(arg, arg.AV, parity, x_cb, ic, jc);
@@ -377,6 +377,152 @@ namespace quda {
       computeUV<dim,dir>(arg, arg.V, parity, x_cb, ic * arg.uvTile.M, jc * arg.uvTile.N);
     else
       computeUV<dim,dir>(arg, arg.AV, parity, x_cb, ic * arg.uvTile.M, jc * arg.uvTile.N);
+  }
+
+  /**
+     Calculates the matrix LV^{s,c'}_mu(x) = \sum_c L^{c}_mu(x) * V^{s,c}_mu(x+3mu)
+     Where: mu = dir, s = fine spin, c' = coarse color, c = fine color
+  */
+  template<int dim, QudaDirection dir, typename Wtype, typename Arg>
+  __device__ __host__ inline void computeLV(Arg &arg, const Wtype &Wacc, int parity, int x_cb, int i0, int j0)
+  {
+    static_assert(Arg::fineSpin == 1, "computeLV is only defined for the staggered dslash");
+    int coord[4];
+    getCoords(coord, x_cb, arg.x_size, parity);
+
+    constexpr int uvSpin = Arg::fineSpinorUV::nSpin;
+    constexpr int nFace = 3;
+
+    using complex = complex<typename Arg::Float>;
+    using TileType = typename Arg::uvTileType;
+    auto &tile = arg.uvTile;
+    using Ctype = decltype(make_tile_C<complex, false>(tile));
+    Ctype LV[uvSpin];
+
+    if ( arg.comm_dim[dim] && (coord[dim] + nFace >= arg.x_size[dim]) ) {
+      int ghost_idx = ghostFaceIndexStaggered<1>(coord, arg.x_size, dim, nFace);
+
+      auto W = make_tile_B<complex, true>(tile);
+      if (!Arg::from_kd_op) {
+
+        // non-KD op
+        for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+          auto L = make_tile_A<complex, false>(tile);
+          L.load(arg.L, dim, parity, x_cb, i0, k);
+          // loading from V == AV, which has nSpin == 1
+          W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, 0, k, j0);
+          LV[0].mma_nn(L, W);
+        }   // Fine color (tensor)
+      } else {
+        // KD op, need to keep track of if we're loading from V or AV
+        if (dir == QUDA_FORWARDS) {
+          // loading from V, only need to load from "one" spin
+          for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+            auto L = make_tile_A<complex, false>(tile);
+            L.load(arg.L, dim, parity, x_cb, i0, k);
+            W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, 0, k, j0);
+            // store to a different component of UV depending on if we're gathering
+            // from even, odd
+            LV[(parity+1)&1].mma_nn(L, W);
+          }
+        } else if (dir == QUDA_BACKWARDS) {
+          // loading from AV, need to be mindful of if we're loading from a "from even" or "from odd" site
+          for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+            auto L = make_tile_A<complex, false>(tile);
+            L.load(arg.L, dim, parity, x_cb, i0, k);
+
+            for (int s = 0; s < Arg::fineSpinorAV::nSpin; s++) {
+              W.loadCS(Wacc, dim, 1, (parity+1)&1, ghost_idx, s, k, j0);
+              LV[s].mma_nn(L, W);
+            }
+          }
+        }
+      }
+
+    } else {
+      int y_cb = linkIndexP3(coord, arg.x_size, dim);
+
+      auto W = make_tile_B<complex, false>(tile);
+      if (!Arg::from_kd_op) {
+
+        // non-KD op
+        for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+
+          auto L = make_tile_A<complex, false>(tile);
+          L.load(arg.L, dim, parity, x_cb, i0, k);
+          // loading from V == AV, which has nSpin == 1
+          W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, 0, k, j0);
+          LV[0].mma_nn(L, W);
+        }   // Fine color (tensor)
+      } else {
+        // KD op, need to keep track of if we're loading from V or AV
+        if (dir == QUDA_FORWARDS) {
+          // loading from V, only need to load from "one" spin
+          for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+            auto L = make_tile_A<complex, false>(tile);
+            L.load(arg.L, dim, parity, x_cb, i0, k);
+
+            W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, 0, k, j0);
+            // store to a different component of UV depending on if we're gathering
+            // from even, odd
+            LV[(parity+1)&1].mma_nn(L, W);
+          }
+        } else if (dir == QUDA_BACKWARDS) {
+          // loading from AV, need to be mindful of if we're loading from a "from even" or "from odd" site
+          for (int k = 0; k < TileType::k; k += TileType::K) { // Fine Color columns of gauge field
+            auto L = make_tile_A<complex, false>(tile);
+            L.load(arg.L, dim, parity, x_cb, i0, k);
+            for (int s = 0; s < Arg::fineSpinorAV::nSpin; s++) {
+              W.loadCS(Wacc, 0, 0, (parity+1)&1, y_cb, s, k, j0);
+              LV[s].mma_nn(L, W);
+            }
+          }
+        }
+
+      }
+
+    }
+
+#pragma unroll
+    for (int s = 0; s < uvSpin; s++) LV[s].saveCS(arg.UV, 0, 0, parity, x_cb, s, i0, j0);
+
+  } // computeLV
+
+  template<int dim, QudaDirection dir, typename Arg>
+  void ComputeLVCPU(Arg &arg)
+  {
+    using TileType = typename Arg::uvTileType;
+    for (int parity=0; parity<2; parity++) {
+#pragma omp parallel for
+      for (int x_cb=0; x_cb<arg.fineVolumeCB; x_cb++) {
+        for (int ic = 0; ic < TileType::m; ic += TileType::M)   // fine color
+          for (int jc = 0; jc < TileType::n; jc += TileType::N) // coarse color
+            if (dir == QUDA_FORWARDS || dir == QUDA_IN_PLACE) // only for preconditioned clover, staggered KD is V != AV
+              computeLV<dim,dir>(arg, arg.V, parity, x_cb, ic, jc);
+            else
+              computeLV<dim,dir>(arg, arg.AV, parity, x_cb, ic, jc);
+      } // c/b volume
+    }   // parity
+  }
+
+  template<int dim, QudaDirection dir, typename Arg>
+  __global__ void ComputeLVGPU(Arg arg)
+  {
+    int x_cb = blockDim.x*blockIdx.x + threadIdx.x;
+    if (x_cb >= arg.fineVolumeCB) return;
+
+    int ic_parity = blockDim.y*blockIdx.y + threadIdx.y; // parity and tiled fine color
+    if (ic_parity >= 2*arg.uvTile.M_tiles) return;
+    int ic = ic_parity % arg.uvTile.M_tiles;
+    int parity = ic_parity / arg.uvTile.M_tiles;
+
+    int jc = blockDim.z*blockIdx.z + threadIdx.z; // tiled coarse color
+    if (jc >= arg.uvTile.N_tiles) return;
+
+    if (dir == QUDA_FORWARDS) // only for preconditioned clover, staggered KD is V != AV
+      computeLV<dim,dir>(arg, arg.V, parity, x_cb, ic * arg.uvTile.M, jc * arg.uvTile.N);
+    else
+      computeLV<dim,dir>(arg, arg.AV, parity, x_cb, ic * arg.uvTile.M, jc * arg.uvTile.N);
   }
 
   /**
@@ -815,8 +961,9 @@ namespace quda {
   }
 
   /**
-     @brief Do a single (AV)^\dagger * UV product, where for preconditioned
-     clover, AV correspond to the clover inverse multiplied by the
+     @brief Do a single (AV)^\dagger * UV product (ComputeVUV) or a single (AV)^\dagger
+     * LV product (ComputeVLV), where for preconditioned
+     clover, AV correspond to the clover inverse or KD inverse multiplied by the
      packed null space vectors, else AV is simply the packed null
      space vectors.
 
@@ -1206,7 +1353,7 @@ namespace quda {
   }
 
 
-  template<bool shared_atomic, bool parity_flip, int dim, QudaDirection dir,
+  template<bool shared_atomic, bool parity_flip, int dim, QudaDirection dir, int nFace,
            typename Arg, typename Gamma>
   __device__ __host__ void computeVUV(Arg &arg, const Gamma &gamma, int parity, int x_cb, int i0, int j0, int parity_coarse_, int coarse_x_cb_)
   {
@@ -1221,7 +1368,7 @@ namespace quda {
     //Check to see if we are on the edge of a block.  If adjacent site
     //is in same block, M = X, else M = Y
     constexpr bool isFromCoarseClover = Arg::fineSpin == 2 && dir == QUDA_IN_PLACE;
-    const bool isDiagonal = (isFromCoarseClover || ((coord[dim]+1)%arg.x_size[dim])/arg.geo_bs[dim] == coord_coarse[dim]) ? true : false;
+    const bool isDiagonal = (isFromCoarseClover || ((coord[dim]+nFace)%arg.x_size[dim])/arg.geo_bs[dim] == coord_coarse[dim]) ? true : false;
 
     int coarse_parity = shared_atomic ? parity_coarse_ : 0;
     if (!shared_atomic) {
@@ -1307,7 +1454,7 @@ namespace quda {
       for (int x_cb=0; x_cb<arg.fineVolumeCB; x_cb++) { // Loop over fine volume
 	for (int ic=0; ic<arg.vuvTile.m; ic+=arg.vuvTile.M)
 	  for (int jc=0; jc<arg.vuvTile.n; jc+=arg.vuvTile.N)
-	    computeVUV<shared_atomic,parity_flip,dim,dir>(arg, gamma, parity, x_cb, ic, jc, 0, 0);
+	    computeVUV<shared_atomic,parity_flip,dim,dir,1>(arg, gamma, parity, x_cb, ic, jc, 0, 0);
       } // c/b volume
     } // parity
   }
@@ -1326,7 +1473,43 @@ namespace quda {
     if (c_col >= arg.vuvTile.N_tiles) return;
     if (!shared_atomic && x_cb >= arg.fineVolumeCB) return;
 
-    computeVUV<shared_atomic,parity_flip,dim,dir>
+    computeVUV<shared_atomic,parity_flip,dim,dir,1>
+      (arg, gamma, parity, x_cb, c_row * arg.vuvTile.M, c_col * arg.vuvTile.N, parity_coarse, x_coarse_cb);
+  }
+
+  template<int dim, QudaDirection dir, typename Arg>
+  void ComputeVLVCPU(Arg &arg)
+  {
+    using Float = typename Arg::Float;
+    Gamma<Float, QUDA_DEGRAND_ROSSI_GAMMA_BASIS, dim> gamma;
+    constexpr bool shared_atomic = false; // not supported on CPU
+    constexpr bool parity_flip = true;
+
+    for (int parity=0; parity<2; parity++) {
+#pragma omp parallel for
+      for (int x_cb=0; x_cb<arg.fineVolumeCB; x_cb++) { // Loop over fine volume
+  for (int ic=0; ic<arg.vuvTile.m; ic+=arg.vuvTile.M)
+    for (int jc=0; jc<arg.vuvTile.n; jc+=arg.vuvTile.N)
+      computeVUV<shared_atomic,parity_flip,dim,dir,3>(arg, gamma, parity, x_cb, ic, jc, 0, 0);
+      } // c/b volume
+    } // parity
+  }
+
+  template<bool shared_atomic, bool parity_flip, int dim, QudaDirection dir,
+           typename Arg>
+  __global__ void ComputeVLVGPU(Arg arg)
+  {
+    using Float = typename Arg::Float;
+    Gamma<Float, QUDA_DEGRAND_ROSSI_GAMMA_BASIS, dim> gamma;
+    int parity, x_cb, parity_coarse, x_coarse_cb, c_col, c_row;
+    getIndices<shared_atomic,parity_flip>(arg, parity, x_cb, parity_coarse, x_coarse_cb, c_row, c_col);
+
+    if (parity > 1) return;
+    if (c_row >= arg.vuvTile.M_tiles) return;
+    if (c_col >= arg.vuvTile.N_tiles) return;
+    if (!shared_atomic && x_cb >= arg.fineVolumeCB) return;
+
+    computeVUV<shared_atomic,parity_flip,dim,dir,3>
       (arg, gamma, parity, x_cb, c_row * arg.vuvTile.M, c_col * arg.vuvTile.N, parity_coarse, x_coarse_cb);
   }
 

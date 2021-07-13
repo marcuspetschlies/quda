@@ -704,8 +704,8 @@ namespace quda {
 	flops_ = 4l * arg.fineVolumeCB * 8 * (fineSpin/2) * (fineSpin/2) * (fineSpin/2) * fineColor * fineColor * coarseColor;
 	break;
       case COMPUTE_KV:
-      // FIXME do the flops match
-      flops_ = 0l;
+      // similar to a single KD apply, but there are separate accumulations for even source and odd source
+      flops_ = 2l * fineColor * ( 8ll * fineColor * 8ll - 2ll ) * coarseColor;
       case COMPUTE_VUV:
       case COMPUTE_VLV:
       // when the fine operator is truly fine the VUV multiplication is block sparse which halves the number of operations
@@ -757,7 +757,7 @@ namespace quda {
 #endif
 	break;
       case COMPUTE_KV:
-        bytes_ = arg.AV.Bytes() + arg.V.Bytes() + arg.K.Bytes();
+        bytes_ = arg.AV.Bytes() + arg.V.Bytes() + arg.K.Bytes() * coarseColor;
       case COMPUTE_CLOVER_INV_MAX:
       case COMPUTE_TWISTED_CLOVER_INV_MAX:
         bytes_ = 2*arg.C.Bytes(); // read both parities of the clover field

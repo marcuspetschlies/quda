@@ -18,14 +18,14 @@ namespace quda {
     const GaugeField &Xinv;
 
     long long flops() const { 
-      // a coarse volume number of 48x48 mat-vec
-      // FIXME
-      return 0ll; // 2ll * arg.coarseVolumeCB * Arg::coarseDof * (8ll * Arg::coarseDof - 2);
+      // 3x3 mat-vec, gathering from 16 sites (same as asqtad stencil)
+      return Arg::nColor * ( 8ll * Arg::nColor * 16ll - 2ll );
     }
 
     long long bytes() const
     {
-      return 2 * meta.Bytes() + Xinv.Bytes();
+      // load the input 16 times (gather from each site of 2^4 hypercube), store once
+      return (16ll + 1ll) * meta.Bytes() + Xinv.Bytes();
     }
 
     unsigned int minThreads() const { return arg.volumeCB; }

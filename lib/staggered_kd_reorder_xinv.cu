@@ -19,7 +19,7 @@ template <typename Float, int fineColor, int coarseSpin, int coarseColor, typena
 
     long long flops() const { 
       // just a permutation
-      return 0l;
+      return 0ll;
     }
 
     long long bytes() const

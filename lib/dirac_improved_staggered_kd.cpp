@@ -168,8 +168,6 @@ namespace quda
   void DiracImprovedStaggeredKD::prepareSpecialMG(ColorSpinorField *&src, ColorSpinorField *&sol, ColorSpinorField &x,
                                                   ColorSpinorField &b, const QudaSolutionType solType) const
   {
-    // TODO: technically KD is a different type of preconditioning.
-    // Should we support "preparing" and "reconstructing"?
     if (solType == QUDA_MATPC_SOLUTION || solType == QUDA_MATPCDAG_MATPC_SOLUTION) {
       errorQuda("Preconditioned solution requires a preconditioned solve_type");
     }
@@ -207,10 +205,6 @@ namespace quda
   void DiracImprovedStaggeredKD::reconstructSpecialMG(ColorSpinorField &x, const ColorSpinorField &b,
                                                       const QudaSolutionType solType) const
   {
-    // do nothing
-
-    // TODO: technically KD is a different type of preconditioning.
-    // Should we support "preparing" and "reconstructing"?
 
     checkFullSpinor(x, b);
 

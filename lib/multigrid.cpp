@@ -891,7 +891,8 @@ namespace quda
     // and if the aggregate size is too small in a direction
     bool can_verify = true;
 
-    if (param.transfer_type == QUDA_TRANSFER_OPTIMIZED_KD && (diracSmoother->getDiracType() == QUDA_STAGGERED_DIRAC || diracSmoother->getDiracType() == QUDA_STAGGEREDPC_DIRAC || diracSmoother->getDiracType() == QUDA_STAGGEREDKD_DIRAC)) {
+    if (param.transfer_type == QUDA_TRANSFER_OPTIMIZED_KD && (diracSmoother->getDiracType() == QUDA_STAGGERED_DIRAC || diracSmoother->getDiracType() == QUDA_STAGGEREDPC_DIRAC || 
+                                                              diracSmoother->getDiracType() == QUDA_ASQTAD_DIRAC || diracSmoother->getDiracType() == QUDA_ASQTADPC_DIRAC)) {
       // If we're doing an optimized build with the staggered operator, we need to skip the verify on level 0
       can_verify = false;
       if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Intentionally skipping staggered -> staggered KD verify because it's not a \"real\" coarsen\n");

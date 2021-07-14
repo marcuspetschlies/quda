@@ -208,9 +208,6 @@ namespace quda
                                       cudaGaugeField *long_gauge_in, cudaCloverField *clover_in)
   {
     Dirac::updateFields(gauge_in, nullptr, nullptr, nullptr);
-
-    // Recompute Xinv (I guess we should do that here?)
-    BuildStaggeredKahlerDiracInverse(*Xinv, *gauge, mass);
   }
 
   void DiracStaggeredKD::createCoarseOp(GaugeField &Y, GaugeField &X, const Transfer &T, double kappa, double mass,

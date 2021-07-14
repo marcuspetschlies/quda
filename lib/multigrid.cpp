@@ -248,6 +248,23 @@ namespace quda
     popLevel(param.level);
   }
 
+  void MG::resetStaggeredKD(cudaGaugeField *gauge_in, cudaGaugeField *fat_gauge_in, cudaGaugeField *long_gauge_in, double mass)
+  {
+    if (param.transfer_type != QUDA_TRANSFER_OPTIMIZED_KD)
+      errorQuda("Attempting to update fine gauge fields of a \"coarse\" but non-KD operator");
+
+    // last nullptr is for the clover field
+    diracCoarseResidual->updateFields(gauge_in, fat_gauge_in, long_gauge_in, nullptr);
+    diracCoarseSmoother->updateFields(gauge_in, fat_gauge_in, long_gauge_in, nullptr);
+    diracCoarseSmootherSloppy->updateFields(gauge_in, fat_gauge_in, long_gauge_in, nullptr);
+
+    diracCoarseResidual->setMass(mass);
+    diracCoarseSmoother->setMass(mass);
+    diracCoarseSmootherSloppy->setMass(mass);
+
+    // to-do: think about updating Xinv
+  }
+
   void MG::pushLevel(int level) const
   {
     postTrace();

@@ -1937,7 +1937,7 @@ void milcSetMultigridParam(milcMultigridPack *mg_pack, QudaPrecision host_precis
     // from test routines: // smoother_solve_type[i];
     switch (i) {
     case 0: mg_param.smoother_solve_type[0] = QUDA_DIRECT_SOLVE; break;
-    case 1: mg_param.smoother_solve_type[1] = (optimized_build ? QUDA_DIRECT_PC_SOLVE : QUDA_DIRECT_SOLVE); break;
+    case 1: mg_param.smoother_solve_type[1] = (optimized_build ? QUDA_DIRECT_SOLVE : QUDA_DIRECT_PC_SOLVE); break;
     default: mg_param.smoother_solve_type[i] = input_struct.coarse_solve_type[i]; break;
     }
 
@@ -2032,6 +2032,7 @@ void milcSetMultigridParam(milcMultigridPack *mg_pack, QudaPrecision host_precis
 
   // coarsening the spin on the first restriction is undefined for staggered fields.
   mg_param.spin_block_size[0] = 0;
+  if (optimized_build) mg_param.spin_block_size[1] = 0;
 
   mg_param.setup_type = QUDA_NULL_VECTOR_SETUP;     // setup_type;
   mg_param.pre_orthonormalize = QUDA_BOOLEAN_FALSE; // pre_orthonormalize ? QUDA_BOOLEAN_TRUE : QUDA_BOOLEAN_FALSE;

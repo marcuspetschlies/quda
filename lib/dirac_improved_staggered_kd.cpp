@@ -227,9 +227,6 @@ namespace quda
     Dirac::updateFields(fat_gauge_in, nullptr, nullptr, nullptr);
     fatGauge = fat_gauge_in;
     longGauge = long_gauge_in;
-
-    // Recompute Xinv (I guess we should do that here?)
-    BuildStaggeredKahlerDiracInverse(*Xinv, *fatGauge, mass);
   }
 
   void DiracImprovedStaggeredKD::createCoarseOp(GaugeField &Y, GaugeField &X, const Transfer &T, double kappa,

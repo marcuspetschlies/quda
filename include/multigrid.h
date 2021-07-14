@@ -316,6 +316,12 @@ public:
     void reset(bool refresh=false);
 
     /**
+       @brief This method only resets the KD operators with the updated fine links and rebuilds
+              the KD inverse
+     */
+    void resetStaggeredKD(cudaGaugeField *gauge_in, cudaGaugeField *fat_gauge_in, cudaGaugeField *long_gauge_in, double mass);
+
+    /**
        @brief Dump the null-space vectors to disk.  Will recurse dumping all levels.
     */
     void dumpNullVectors() const;

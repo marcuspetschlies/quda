@@ -402,8 +402,8 @@ namespace quda {
       }
     } else if (coarseColor == 64) {
       aggregateStaggeredY<Float,vFloat,fineColor,fineSpin,64,coarseSpin>(Y, X, T, g, l, XinvKD, mass, dirac, matpc);
-    //} else if (coarseColor == 96) {
-    //  aggregateStaggeredY<Float,vFloat,fineColor,fineSpin,96,coarseSpin>(Y, X, T, g, l, XinvKD, mass, dirac, matpc);
+    } else if (coarseColor == 96) {
+      aggregateStaggeredY<Float,vFloat,fineColor,fineSpin,96,coarseSpin>(Y, X, T, g, l, XinvKD, mass, dirac, matpc);
     } else { // revisit 3 -> 96 later
       errorQuda("Unsupported number of coarse dof %d\n", Y.Ncolor());
     }

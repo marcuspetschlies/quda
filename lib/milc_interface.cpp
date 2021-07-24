@@ -1287,6 +1287,7 @@ struct mgInputStruct {
   bool verify_results;
   QudaPrecision preconditioner_precision; // precision for near-nulls, coarse links
   bool optimized_kd;                      // use the optimized KD operator (true) or naive coarsened operator (false)
+  bool use_mma;                           // accelerate setup using MMA routines
 
   // Setup
   int nvec[QUDA_MAX_MG_LEVEL];                   // ignored on first level, if non-zero on last level we deflate
@@ -1351,6 +1352,7 @@ struct mgInputStruct {
     verify_results(true),
     preconditioner_precision(QUDA_HALF_PRECISION),
     optimized_kd(true),
+    use_mma(true),
     deflate_n_ev(66),
     deflate_n_kr(128),
     deflate_max_restarts(50),
@@ -1539,6 +1541,12 @@ struct mgInputStruct {
         optimized_kd = input_line[1][0] == 't' ? true : false;
       }
 
+    } else if (strcmp(input_line[0].c_str(), "use_mma") == 0) {
+      if (input_line.size() < 2) {
+        error_code = 1;
+      } else {
+        use_mma = input_line[1][0] == 't' ? true : false;
+      }
     } else if (strcmp(input_line[0].c_str(), "mg_verbosity") == 0) {
       if (input_line.size() < 3) {
         error_code = 1;
@@ -1865,7 +1873,7 @@ void milcSetMultigridParam(milcMultigridPack *mg_pack, QudaPrecision host_precis
   mg_param.invert_param = &inv_param;
   mg_param.n_level = mg_levels; // set from file
 
-  mg_param.use_mma = QUDA_BOOLEAN_FALSE; // TODO: set to false, for now.
+  mg_param.use_mma = input_struct.use_mma ? QUDA_BOOLEAN_TRUE : QUDA_BOOLEAN_FALSE;
 
   for (int i = 0; i < mg_param.n_level; i++) {
 

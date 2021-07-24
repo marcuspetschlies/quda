@@ -138,6 +138,8 @@ namespace quda {
         cudaColorSpinorField v_(param_v);
 
         v_.copy(v);
+        // evict to host
+        v.prefetch(QUDA_CPU_FIELD_LOCATION);
 
         V vAccessor(v_);
         F uvAccessor(const_cast<ColorSpinorField &>(uv));
@@ -156,6 +158,8 @@ namespace quda {
           cAccessor, cInvAccessor, Y, X, Yatomic, Xatomic, uv, const_cast<cudaColorSpinorField &>(v_), v_, g, g, g,
           *dummyClover(), kappa, mass, mu, mu_factor, dirac, matpc, need_bidirectional, T.fineToCoarse(Y.Location()),
           T.coarseToFine(Y.Location()), use_mma);
+
+	v.prefetch(QUDA_CUDA_FIELD_LOCATION);
       }
     }
   }
@@ -367,7 +371,7 @@ namespace quda {
 
       // The MMA implementation requires fields to be in AoS order: we check each gauge field, and create a copy if not.
       // The UV field is an intermediate field, its order doesn't matter; The AoS copy of the V field will be created
-      // later in the code path.
+      // later in the code path. If we're using managed memory and prefetching, evict SoA fields to host memory.
       constexpr QudaGaugeFieldOrder gOrder = QUDA_MILC_GAUGE_ORDER;
 
       auto create_gauge_copy = [](const GaugeField &X, QudaGaugeFieldOrder order, bool copy_content) -> auto
@@ -380,6 +384,7 @@ namespace quda {
           param.order = order;
           output = cudaGaugeField::Create(param);
           if (copy_content) output->copy(X);
+          X.prefetch(QUDA_CPU_FIELD_LOCATION);
         }
         return static_cast<cudaGaugeField *>(output);
       };
@@ -415,18 +420,29 @@ namespace quda {
       if (Xatomic != X_order) delete Xatomic;
 
       if (&Y != Y_order) {
+        Y.prefetch(QUDA_CUDA_FIELD_LOCATION);
         Y.copy(*Y_order);
         delete Y_order;
       }
 
       if (&X != X_order) {
+        X.prefetch(QUDA_CUDA_FIELD_LOCATION);
         X.copy(*X_order);
         delete X_order;
       }
 
-      if (&gauge != G_order) { delete G_order; }
-      if (&clover != C_order) { delete C_order; }
-      if (&cloverInv != I_order) { delete I_order; }
+      if (&gauge != G_order) {
+        delete G_order;
+        gauge.prefetch(QUDA_CUDA_FIELD_LOCATION);
+      }
+      if (&clover != C_order) {
+        delete C_order;
+        clover.prefetch(QUDA_CUDA_FIELD_LOCATION);
+      }
+      if (&cloverInv != I_order) {
+        delete I_order;
+        cloverInv.prefetch(QUDA_CUDA_FIELD_LOCATION);
+      }
     }
 
     delete uv;

@@ -1399,6 +1399,8 @@ namespace quda {
 
     } // end routines for multiplying by (inverse) clover, or KD term
 
+    saveTuneCache();
+
     // work out what to set the scales to
     if (coarseGaugeAtomic::fixedPoint()) {
       double max = 500.0; // Should be more than sufficient
@@ -1437,11 +1439,15 @@ namespace quda {
 
         if (getVerbosity() >= QUDA_VERBOSE) printfQuda("UV2[%d] = %e\n", d, arg.UV.norm2());
 
+        saveTuneCache();
+
         // if we are writing to a temporary, we need to zero it before each computation
         if (Y_atomic.Geometry() == 1) Y_atomic_.zero();
 
         y.setComputeType(COMPUTE_VUV); // compute Y += VUV
         y.apply(0);
+
+        saveTuneCache();
 
         if (dirac == QUDA_ASQTAD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) {
           if (geo_bs[d] > 3) {
@@ -1457,10 +1463,12 @@ namespace quda {
             y.setComputeType(COMPUTE_LV); // compute L*V product
             y.apply(0);
             if (getVerbosity() >= QUDA_VERBOSE) printfQuda("LV2[%d] = %e\n", d, arg.UV.norm2());
+            saveTuneCache();
 
             // *do not* zero out Y
             y.setComputeType(COMPUTE_VLV); // compute Y += VLV
             y.apply(0);
+            saveTuneCache();
           } else if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Skipping long link coarsening because geo_bs[%d] = %d is too small\n", d, geo_bs[d]);
         }
 
@@ -1531,11 +1539,15 @@ namespace quda {
       y.apply(0);
       if (getVerbosity() >= QUDA_VERBOSE) printfQuda("UAV2[%d] = %e\n", d, arg.UV.norm2());
 
+      saveTuneCache();
+
       // if we are writing to a temporary, we need to zero it before each computation
       if (Y_atomic.Geometry() == 1) Y_atomic_.zero();
 
       y.setComputeType(COMPUTE_VUV); // compute Y += VUV
       y.apply(0);
+
+      saveTuneCache();
 
 
       if (dirac == QUDA_ASQTAD_DIRAC || dirac == QUDA_ASQTADKD_DIRAC) {
@@ -1552,10 +1564,12 @@ namespace quda {
           y.setComputeType(COMPUTE_LV); // compute L*V product
           y.apply(0);
           if (getVerbosity() >= QUDA_VERBOSE) printfQuda("LAV2[%d] = %e\n", d, arg.UV.norm2());
+          saveTuneCache();
 
           // *do not* zero out Y
           y.setComputeType(COMPUTE_VLV); // compute Y += VLV
           y.apply(0);
+          saveTuneCache();
         } else if (getVerbosity() >= QUDA_VERBOSE) printfQuda("Skipping long link coarsening because geo_bs[%d] = %d is too small\n", d, geo_bs[d]);
       }
 
@@ -1695,6 +1709,8 @@ namespace quda {
     }
 
     if (getVerbosity() >= QUDA_VERBOSE) printfQuda("X2 = %e\n", X_.norm2(0));
+
+    saveTuneCache();
   }
 
 } // namespace quda

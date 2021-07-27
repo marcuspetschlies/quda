@@ -716,7 +716,8 @@ namespace quda {
       if (x.size() == 1) {
         int NYW_max = max_YW_size(x.size(), x[0]->Precision(), y[0]->Precision(), false, false, coeff_width, true);
         // if fine-grid then we set max tile size to 32 to avoid unnecessary tuning
-        uint2 max_tile_size = make_uint2(1, std::min( {NYW_max, (int)y.size(), x[0]->Ncolor() == 3 ? 32 : NYW_max} ));
+        // FIXME and coarse grid as well, as opposed to `x[0]->Ncolor() == 3 ? 32 : NYW_max`
+        uint2 max_tile_size = make_uint2(1, std::min( {NYW_max, (int)y.size(), x[0]->Ncolor() == 3 ? 32 : 64} ));
         multiReduce_recurse<multiDot, multiDot>(result_tmp, x, y, x, x, 0, 0, false, max_tile_size);
       } else if (y.size() == 1 && x[0]->Precision() == y[0]->Precision()) {
 
@@ -725,7 +726,7 @@ namespace quda {
         // swap (x<->y and w<-z> when doing transpose calculation)
         int NXZ_max = max_YW_size(y.size(), y[0]->Precision(), x[0]->Precision(), false, false, coeff_width, true);
         // if fine-grid then we set max tile size to 32 to avoid unnecessary tuning
-        uint2 max_tile_size = make_uint2(1, std::min( {NXZ_max, (int)x.size(), x[0]->Ncolor() == 3 ? 32 : NXZ_max} ));
+        uint2 max_tile_size = make_uint2(1, std::min( {NXZ_max, (int)x.size(), x[0]->Ncolor() == 3 ? 32 : 64} ));
         multiReduce_recurse<multiDot, multiDot>(result_trans, y, x, y, y, 0, 0, false, max_tile_size);
 
         // transpose the result if we are doing the transpose calculation
@@ -769,16 +770,17 @@ namespace quda {
       if (x.size() == 1) {
         int NYW_max = max_YW_size(x.size(), x[0]->Precision(), y[0]->Precision(), false, false, coeff_width, true);
         // if fine-grid then we set max tile size to 32 to avoid unnecessary tuning
-        uint2 max_tile_size = make_uint2(1, std::min( {NYW_max, (int)y.size(), x[0]->Ncolor() == 3 ? 32 : NYW_max} ));
+        // FIXME NYW_MAX not 64
+        uint2 max_tile_size = make_uint2(1, std::min( {NYW_max, (int)y.size(), x[0]->Ncolor() == 3 ? 32 : 64} ));
         multiReduce_recurse<multiCdot, multiCdot>(result_tmp, x, y, x, x, 0, 0, false, max_tile_size);
       } else if (y.size() == 1 && x[0]->Precision() == y[0]->Precision()) {
-
         Complex *result_trans = new Complex[x.size() * y.size()];
 
         // swap (x<->y and w<-z> when doing transpose calculation)
         int NXZ_max = max_YW_size(y.size(), y[0]->Precision(), x[0]->Precision(), false, false, coeff_width, true);
         // if fine-grid then we set max tile size to 32 to avoid unnecessary tuning
-        uint2 max_tile_size = make_uint2(1, std::min( {NXZ_max, (int)x.size(), x[0]->Ncolor() == 3 ? 32 : NXZ_max} ));
+        // FIXME NYW_MAX not 64
+        uint2 max_tile_size = make_uint2(1, std::min( {NXZ_max, (int)x.size(), x[0]->Ncolor() == 3 ? 32 : 64} ));
         multiReduce_recurse<multiCdot, multiCdot>(result_trans, y, x, y, y, 0, 0, false, max_tile_size);
 
         // transpose the result if we are doing the transpose calculation

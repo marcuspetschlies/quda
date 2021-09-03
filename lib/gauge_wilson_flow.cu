@@ -115,7 +115,7 @@ namespace quda {
     }
   }; // GaugeWFlowStep
 
-  void WFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, const double epsilon, const QudaWFlowType wflow_type)
+  void WFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, const double epsilon, const QudaWFlowType wflow_type, const int step_type)
   {
 #ifdef GPU_GAUGE_TOOLS
     checkPrecision(out, temp, in);
@@ -123,19 +123,29 @@ namespace quda {
     if (temp.Reconstruct() != QUDA_RECONSTRUCT_NO) errorQuda("Temporary vector must not use reconstruct");
     if (!out.isNative()) errorQuda("Order %d with %d reconstruct not supported", in.Order(), in.Reconstruct());
     if (!in.isNative()) errorQuda("Order %d with %d reconstruct not supported", out.Order(), out.Reconstruct());
+    
+    if (step_type == 0) {
+      // Set each step type as an arg parameter, update halos if needed
+      // Step W1
+      instantiate<GaugeWFlowStep,WilsonReconstruct>(out, temp, in, epsilon, wflow_type, WFLOW_STEP_W1);
+      out.exchangeExtendedGhost(out.R(), false);
 
-    // Set each step type as an arg parameter, update halos if needed
-    // Step W1
-    instantiate<GaugeWFlowStep,WilsonReconstruct>(out, temp, in, epsilon, wflow_type, WFLOW_STEP_W1);
-    out.exchangeExtendedGhost(out.R(), false);
+      // Step W2
+      instantiate<GaugeWFlowStep,WilsonReconstruct>(in, temp, out, epsilon, wflow_type, WFLOW_STEP_W2);
+      in.exchangeExtendedGhost(in.R(), false);
 
-    // Step W2
-    instantiate<GaugeWFlowStep,WilsonReconstruct>(in, temp, out, epsilon, wflow_type, WFLOW_STEP_W2);
-    in.exchangeExtendedGhost(in.R(), false);
+      // Step Vt
+      instantiate<GaugeWFlowStep,WilsonReconstruct>(out, temp, in, epsilon, wflow_type, WFLOW_STEP_VT);
+      out.exchangeExtendedGhost(out.R(), false);
 
-    // Step Vt
-    instantiate<GaugeWFlowStep,WilsonReconstruct>(out, temp, in, epsilon, wflow_type, WFLOW_STEP_VT);
-    out.exchangeExtendedGhost(out.R(), false);
+    } else {
+      switch(step_type) {
+        case 1: instantiate<GaugeWFlowStep,WilsonReconstruct>(out, temp, in, epsilon, wflow_type, WFLOW_STEP_W1); break;
+	case 2: instantiate<GaugeWFlowStep,WilsonReconstruct>(out, temp, in, epsilon, wflow_type, WFLOW_STEP_W2); break;
+	case 3: instantiate<GaugeWFlowStep,WilsonReconstruct>(out, temp, in, epsilon, wflow_type, WFLOW_STEP_VT); break;
+      }
+      out.exchangeExtendedGhost(out.R(), false);
+    }
 #else
     errorQuda("Gauge tools are not built");
 #endif

@@ -213,6 +213,9 @@ static TimeProfile profileOvrImpSTOUT("OvrImpSTOUTQuda");
 //!< Profiler for wFlowQuda
 static TimeProfile profileWFlow("wFlowQuda");
 
+//!< Profiler for gFlowQuda
+static TimeProfile profileGFlow("gFlowQuda");
+
 //!< Profiler for projectSU3Quda
 static TimeProfile profileProject("projectSU3Quda");
 
@@ -1543,6 +1546,7 @@ void endQuda(void)
     profileSTOUT.Print();
     profileOvrImpSTOUT.Print();
     profileWFlow.Print();
+    profileGFlow.Print();
     profileProject.Print();
     profilePhase.Print();
     profileMomAction.Print();
@@ -5814,7 +5818,7 @@ void performWFlownStep(unsigned int n_steps, double step_size, int meas_interval
     profileWFlow.TPSTART(QUDA_PROFILE_COMPUTE);
     if (i > 0) std::swap(in, out); // output from prior step becomes input for next step
 
-    WFlowStep(*out, *gaugeTemp, *in, step_size, wflow_type);
+    WFlowStep(*out, *gaugeTemp, *in, step_size, wflow_type, 0);
     profileWFlow.TPSTOP(QUDA_PROFILE_COMPUTE);
 
     if ((i + 1) % meas_interval == 0 && getVerbosity() >= QUDA_SUMMARIZE) {
@@ -5827,6 +5831,123 @@ void performWFlownStep(unsigned int n_steps, double step_size, int meas_interval
   delete gaugeTemp;
   delete gaugeAux;
   profileWFlow.TPSTOP(QUDA_PROFILE_TOTAL);
+  popOutputPrefix();
+}
+
+void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsigned int n_steps, double step_size, int meas_interval, QudaWFlowType wflow_type)
+{
+  pushOutputPrefix("performWFlownStep: ");
+  profileGFlow.TPSTART(QUDA_PROFILE_TOTAL);
+
+  if (gaugePrecise == nullptr) errorQuda("Gauge field must be loaded");
+
+  if (gaugeSmeared != nullptr) delete gaugeSmeared;
+  gaugeSmeared = createExtendedGauge(*gaugePrecise, R, profileGFlow);
+
+  GaugeFieldParam gParamEx(*gaugeSmeared);
+  auto *gaugeAux = GaugeField::Create(gParamEx);
+
+  GaugeFieldParam gParam(*gaugePrecise);
+  gParam.reconstruct = QUDA_RECONSTRUCT_NO; // temporary field is not on manifold so cannot use reconstruct
+  auto *gaugeTemp = GaugeField::Create(gParam);
+
+  GaugeField *in = gaugeSmeared;
+  GaugeField *out = gaugeAux;
+
+  QudaGaugeObservableParam param = newQudaGaugeObservableParam();
+  param.compute_plaquette = QUDA_BOOLEAN_TRUE;
+  param.compute_qcharge = QUDA_BOOLEAN_TRUE;
+
+  ColorSpinorParam cpuParam(h_in, *inv_param, in->X(), false, inv_param->input_location);
+  ColorSpinorField *in_h = ColorSpinorField::Create(cpuParam);
+
+  ColorSpinorParam cudaParam(cpuParam, *inv_param);
+  cudaColorSpinorField f_in(*in_h, cudaParam);
+
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
+    double cpu = blas::norm2(*in_h);
+    double gpu = blas::norm2(f_in);
+    printfQuda("In CPU %e CUDA %e\n", cpu, gpu);
+  }
+
+  cudaParam.create = QUDA_NULL_FIELD_CREATE;
+  cudaColorSpinorField f_temp0(f_in, cudaParam);
+  cudaColorSpinorField f_temp1(f_in, cudaParam);
+  cudaColorSpinorField f_temp2(f_in, cudaParam);
+  cudaColorSpinorField f_temp3(f_in, cudaParam);
+  cudaColorSpinorField f_temp4(f_in, cudaParam);
+  
+  blas::copy(f_temp3, f_in);
+
+  if (getVerbosity() >= QUDA_SUMMARIZE) {
+    gaugeObservables(*in, param, profileGFlow);
+    printfQuda("flow t, plaquette, E_tot, E_spatial, E_temporal, Q charge\n");
+    printfQuda("%le %.16e %+.16e %+.16e %+.16e %+.16e\n", 0.0, param.plaquette[0], param.energy[0], param.energy[1],
+               param.energy[2], param.qcharge);
+  }
+
+  for (unsigned int i = 0; i < n_steps; i++) {
+    // Perform W1, W2, and Vt Wilson Flow steps as defined in
+    // https://arxiv.org/abs/1006.4518v3
+    profileGFlow.TPSTART(QUDA_PROFILE_COMPUTE);
+    if (i > 0) std::swap(in, out); // output from prior step becomes input for next step
+
+    //STEP 1
+    blas::copy(f_temp0, f_temp3);
+    blas::copy(f_temp1, f_temp0);
+    blas::copy(f_temp2, f_temp0);
+
+    ApplyLaplace(f_temp4, f_temp0, *in, 4, 1., -8., f_temp0, 0, false, nullptr, profileGFlow);
+    blas::copy(f_temp0, f_temp4);
+    blas::axpy(step_size/4., f_temp0, f_temp1);
+
+    WFlowStep(*out, *gaugeTemp, *in, step_size, wflow_type, 1);
+
+    //STEP 2
+    blas::copy(f_temp3, f_temp1);
+
+    ApplyLaplace(f_temp4, f_temp1, *out, 4, 1., -8., f_temp1, 0, false, nullptr, profileGFlow);
+    blas::copy(f_temp1, f_temp4);
+
+    blas::axpy(step_size*8./9., f_temp1, f_temp2);
+    blas::axpy(-step_size*2./9., f_temp0, f_temp2);
+
+    WFlowStep(*in, *gaugeTemp, *out, step_size, wflow_type, 2);
+
+    //STEP 3
+    ApplyLaplace(f_temp4, f_temp2, *in, 4, 1., -8., f_temp2, 0, false, nullptr, profileGFlow);
+    blas::copy(f_temp2, f_temp4);
+
+    blas::axpy(step_size*3./4., f_temp2, f_temp3);
+
+    WFlowStep(*out, *gaugeTemp, *in, step_size, wflow_type, 3);
+    profileGFlow.TPSTOP(QUDA_PROFILE_COMPUTE);
+
+    if ((i + 1) % meas_interval == 0 && getVerbosity() >= QUDA_SUMMARIZE) {
+      gaugeObservables(*out, param, profileWFlow);
+      printfQuda("%le %.16e %+.16e %+.16e %+.16e %+.16e\n", step_size * (i + 1), param.plaquette[0], param.energy[0],
+                 param.energy[1], param.energy[2], param.qcharge);
+    }
+  }
+
+  cpuParam.v = h_out;
+  cpuParam.location = inv_param->output_location;
+  ColorSpinorField *out_h = ColorSpinorField::Create(cpuParam);
+  *out_h = f_temp3;
+
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
+    double cpu = blas::norm2(*out_h);
+    double gpu = blas::norm2(f_temp3);
+    printfQuda("Out CPU %e CUDA %e\n", cpu, gpu);
+  }
+
+  delete in_h;
+  delete out_h;
+
+
+  delete gaugeTemp;
+  delete gaugeAux;
+  profileGFlow.TPSTOP(QUDA_PROFILE_TOTAL);
   popOutputPrefix();
 }
 

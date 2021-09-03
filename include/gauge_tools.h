@@ -107,7 +107,7 @@ namespace quda
      @param[in] epsilon Step size
      @param[in] wflow_type Wilson (1x1) or Symanzik improved (2x1) staples
   */
-  void WFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, double epsilon, QudaWFlowType wflow_type);
+  void WFlowStep(GaugeField &out, GaugeField &temp, GaugeField &in, double epsilon, QudaWFlowType wflow_type, const int step_type);
 
   /**
    * @brief Gauge fixing with overrelaxation with support for single and multi GPU.

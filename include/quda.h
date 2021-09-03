@@ -1476,6 +1476,8 @@ extern "C" {
    */
   void performWFlownStep(unsigned int n_steps, double step_size, int meas_interval, QudaWFlowType wflow_type);
 
+  void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsigned int n_steps, double step_size, int meas_interval, QudaWFlowType wflow_type);
+
   /**
    * @brief Calculates a variety of gauge-field observables.  If a
    * smeared gauge field is presently loaded (in gaugeSmeared) the

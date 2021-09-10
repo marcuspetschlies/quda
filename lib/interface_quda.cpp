@@ -67,6 +67,7 @@ void checkBLASParam(QudaBLASParam &param) { checkBLASParam(&param); }
 using namespace quda;
 
 static int R[4] = {0, 0, 0, 0};
+const int commDims[4] = {1, 1, 1, 1};
 // setting this to false prevents redundant halo exchange but isn't yet compatible with HISQ / ASQTAD kernels
 static bool redundant_comms = false;
 
@@ -5606,7 +5607,7 @@ void copyExtendedResidentGaugeQuda(void* resident_gauge, QudaFieldLocation loc)
 
 void performWuppertalnStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsigned int n_steps, double alpha)
 {
-  profileWuppertal.TPSTART(QUDA_PROFILE_TOTAL);
+  //profileWuppertal.TPSTART(QUDA_PROFILE_TOTAL);
 
   if (gaugePrecise == nullptr) errorQuda("Gauge field must be loaded");
 
@@ -5650,7 +5651,7 @@ void performWuppertalnStep(void *h_out, void *h_in, QudaInvertParam *inv_param, 
 
   for (unsigned int i = 0; i < n_steps; i++) {
     if (i) in = out;
-    ApplyLaplace(out, in, *precise, 3, a, b, in, parity, false, nullptr, profileWuppertal);
+    ApplyLaplace(out, in, *precise, 3, a, b, in, parity, false, commDims, profileWuppertal);
     if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
       double norm = blas::norm2(out);
       printfQuda("Step %d, vector norm %e\n", i, norm);
@@ -5676,7 +5677,7 @@ void performWuppertalnStep(void *h_out, void *h_in, QudaInvertParam *inv_param, 
 
   popVerbosity();
 
-  profileWuppertal.TPSTOP(QUDA_PROFILE_TOTAL);
+  //profileWuppertal.TPSTOP(QUDA_PROFILE_TOTAL);
 }
 
 void performAPEnStep(unsigned int n_steps, double alpha, int meas_interval)
@@ -5897,7 +5898,7 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
     blas::copy(f_temp1, f_temp0);
     blas::copy(f_temp2, f_temp0);
 
-    ApplyLaplace(f_temp4, f_temp0, *in, 4, 1., -8., f_temp0, 0, false, nullptr, profileGFlow);
+    ApplyLaplace(f_temp4, f_temp0, *in, 4, 1., -8., f_temp0, 0, false, commDims, profileWFlow);
     blas::copy(f_temp0, f_temp4);
     blas::axpy(step_size/4., f_temp0, f_temp1);
 
@@ -5906,7 +5907,7 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
     //STEP 2
     blas::copy(f_temp3, f_temp1);
 
-    ApplyLaplace(f_temp4, f_temp1, *out, 4, 1., -8., f_temp1, 0, false, nullptr, profileGFlow);
+    ApplyLaplace(f_temp4, f_temp1, *out, 4, 1., -8., f_temp1, 0, false, commDims, profileWFlow);
     blas::copy(f_temp1, f_temp4);
 
     blas::axpy(step_size*8./9., f_temp1, f_temp2);
@@ -5915,7 +5916,7 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
     WFlowStep(*in, *gaugeTemp, *out, step_size, wflow_type, 2);
 
     //STEP 3
-    ApplyLaplace(f_temp4, f_temp2, *in, 4, 1., -8., f_temp2, 0, false, nullptr, profileGFlow);
+    ApplyLaplace(f_temp4, f_temp2, *in, 4, 1., -8., f_temp2, 0, false, commDims, profileWFlow);
     blas::copy(f_temp2, f_temp4);
 
     blas::axpy(step_size*3./4., f_temp2, f_temp3);
@@ -5924,7 +5925,7 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
     profileGFlow.TPSTOP(QUDA_PROFILE_COMPUTE);
 
     if ((i + 1) % meas_interval == 0 && getVerbosity() >= QUDA_SUMMARIZE) {
-      gaugeObservables(*out, param, profileWFlow);
+      gaugeObservables(*out, param, profileGFlow);
       printfQuda("%le %.16e %+.16e %+.16e %+.16e %+.16e\n", step_size * (i + 1), param.plaquette[0], param.energy[0],
                  param.energy[1], param.energy[2], param.qcharge);
     }

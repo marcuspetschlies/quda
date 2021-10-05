@@ -245,6 +245,9 @@ namespace quda {
         interface)*/
     bool mg_instance;
 
+    /** Whether to use MADWF acceleration or not */
+    QudaBoolean use_madwf;
+
     // the diagonal constant number used to suppress zero modes for MADWF-ML
     double madwf_diagonal_suppressor;
 
@@ -349,6 +352,7 @@ namespace quda {
       is_preconditioner(false),
       global_reduction(true),
       mg_instance(false),
+      use_madwf(param.use_madwf),
       madwf_diagonal_suppressor(param.madwf_diagonal_suppressor),
       madwf_ls(param.madwf_ls),
       madwf_null_miniter(param.madwf_null_miniter),
@@ -435,6 +439,7 @@ namespace quda {
       is_preconditioner(param.is_preconditioner),
       global_reduction(param.global_reduction),
       mg_instance(param.mg_instance),
+      use_madwf(param.use_madwf),
       madwf_diagonal_suppressor(param.madwf_diagonal_suppressor),
       madwf_ls(param.madwf_ls),
       madwf_null_miniter(param.madwf_null_miniter),

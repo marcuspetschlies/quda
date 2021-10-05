@@ -201,6 +201,8 @@ extern bool inv_multigrid;
 extern QudaInverterType precon_type;
 extern QudaSchwarzType precon_schwarz_type;
 
+extern bool use_madwf;
+
 extern double madwf_diagonal_suppressor;
 extern int madwf_ls;
 extern int madwf_null_miniter;

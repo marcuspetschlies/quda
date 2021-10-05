@@ -64,6 +64,8 @@ bool inv_multigrid = false;
 QudaInverterType precon_type = QUDA_INVALID_INVERTER;
 QudaSchwarzType precon_schwarz_type = QUDA_INVALID_SCHWARZ;
 
+bool use_madwf = false;
+
 double madwf_diagonal_suppressor = 0.0;
 int madwf_ls = 4;
 int madwf_null_miniter = niter;
@@ -493,6 +495,8 @@ std::shared_ptr<QUDAApp> make_app(std::string app_description, std::string app_n
     ->add_option("--precon-schwarz-type", precon_schwarz_type,
                  "The type of Schwarz preconditioning to use (default=invalid)")
     ->transform(CLI::QUDACheckedTransformer(schwarz_type_map));
+
+  quda_app->add_option("--madwf", use_madwf, "Whether or not perform MADWF");
 
   quda_app->add_option("--madwf-diagonal-suppressor", madwf_diagonal_suppressor,
                        "Set the digonal suppressor for MADWF (default 0)");

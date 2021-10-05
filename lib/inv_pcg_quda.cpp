@@ -71,7 +71,7 @@ namespace quda
     // so we explicily set this here.
     Kparam.deflate = false;
 
-    if (param.schwarz_type == QUDA_ADDITIVE_MADWF_SCHWARZ) {
+    if (param.schwarz_type == QUDA_ADDITIVE_MADWF_SCHWARZ || param.use_madwf == QUDA_BOOLEAN_TRUE) {
       if (param.inv_type_precondition == QUDA_CG_INVERTER) {
         K = new Acc<MadwfAcc, CG>(matPrecon, matPrecon, matPrecon, matEig, Kparam, profile);
       } else { // unknown preconditioner
@@ -103,7 +103,7 @@ namespace quda
   void PreconCG::solve_and_collect(ColorSpinorField &x, ColorSpinorField &b, std::vector<ColorSpinorField *> &v_r,
                             int collect_miniter, double collect_tol)
   {
-    if (param.schwarz_type == QUDA_ADDITIVE_MADWF_SCHWARZ) { K->train_param(*this, b); }
+    if (param.schwarz_type == QUDA_ADDITIVE_MADWF_SCHWARZ || param.use_madwf == QUDA_BOOLEAN_TRUE) { K->train_param(*this, b); }
 
     profile.TPSTART(QUDA_PROFILE_INIT);
 

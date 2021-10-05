@@ -113,7 +113,9 @@ namespace quda
       blas::copy(out, in);
 
       // M * T^ * A * T * phi - phi
+      commGlobalReductionPush(false);
       return blas::xmyNorm(tmp2, out);
+      commGlobalReductionPop();
     }
 
     template <class Ref, class Base, class Null, bool tune_suppressor = false>
@@ -181,11 +183,11 @@ namespace quda
       for (auto &pB : B) { pB = new cudaColorSpinorField(csParam); }
 
       null.solve_and_collect(null_x, null_b, B, null_miniter, null_tol);
+      commGlobalReductionPush(false);
       for (auto &pB : B) { blas::ax(5e3 / sqrt(blas::norm2(*pB)), *pB); }
+      commGlobalReductionPop();
 
       saveTuneCache();
-
-      commGlobalReductionPush(false);
 
       cudaColorSpinorField chi(csParam);
       cudaColorSpinorField tmp(csParam);
@@ -195,11 +197,13 @@ namespace quda
 
       double residual = 0.0;
       int count = 0;
+      commGlobalReductionPush(false);
       for (const auto &phi : B) {
         residual += blas::norm2(*phi);
         printfQuda("reference dslash norm %03d = %8.4e\n", count, blas::norm2(*phi));
         count++;
       }
+      commGlobalReductionPop();
       printfQuda("reference dslash norm = %8.4e\n", residual);
 
       csParam.x[4] = Ls_base;
@@ -256,7 +260,9 @@ namespace quda
 
           axpby(D, 2.0f, d1, 2.0f, d2);
           if (tune_suppressor) {
+            commGlobalReductionPush(false);
             dmu += 2.0 * blas::reDotProduct(Mchi, *phi);
+            commGlobalReductionPop();
           }
         }
 
@@ -301,7 +307,9 @@ namespace quda
           std::vector<ColorSpinorField *> lhs {&chi, &theta, &lambda};
           std::vector<ColorSpinorField *> rhs {&chi, &theta, &lambda};
           Complex dot[9];
+          commGlobalReductionPush(false);
           blas::cDotProduct(dot, lhs, rhs);
+          commGlobalReductionPop();
 
           a[0] += dot[0].real();
           a[1] += -2.0 * dot[1].real();
@@ -339,7 +347,9 @@ namespace quda
       count = 0;
       for (const auto &phi : B) {
         double ind_chi2 = cost(ref, base, chi, *phi);
+        commGlobalReductionPush(false);
         double phi2 = blas::norm2(*phi);
+        commGlobalReductionPop();
         printfQuda("chi2 %03d %% = %8.4e, phi2 = %8.4e\n", count, ind_chi2 / phi2, phi2);
         count++;
       }
@@ -365,7 +375,6 @@ namespace quda
 
       // Destroy all dynamically allocated stuff.
       for (auto &pB : B) { delete pB; }
-      commGlobalReductionPop();
     }
   };
 

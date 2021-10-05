@@ -230,6 +230,8 @@ void setInvertParam(QudaInvertParam &inv_param)
 
   inv_param.schwarz_type = precon_schwarz_type;
 
+  inv_param.use_madwf = use_madwf ? QUDA_BOOLEAN_TRUE : QUDA_BOOLEAN_FALSE;
+
   inv_param.madwf_diagonal_suppressor = madwf_diagonal_suppressor;
   inv_param.madwf_ls = madwf_ls;
 

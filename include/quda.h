@@ -341,6 +341,7 @@ extern "C" {
      * The following parameters are the ones used to perform the adaptive MADWF in MSPCG
      * See section 3.3 of [arXiv:2104.05615]
      */
+    QudaBoolean use_madwf;
 
     /** The diagonal constant to suppress the low modes when performing 5D transfer */
     double madwf_diagonal_suppressor;

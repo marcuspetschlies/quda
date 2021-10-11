@@ -100,7 +100,7 @@ namespace quda
     }
 
     template <class Ref, class Base>
-    double cost(const Ref &ref, Base &base, ColorSpinorField &out, const ColorSpinorField &in)
+    double loss(const Ref &ref, Base &base, ColorSpinorField &out, const ColorSpinorField &in)
     {
 
       ColorSpinorParam csParam(in);
@@ -183,9 +183,7 @@ namespace quda
       for (auto &pB : B) { pB = new cudaColorSpinorField(csParam); }
 
       null.solve_and_collect(null_x, null_b, B, null_miniter, null_tol);
-      commGlobalReductionPush(false);
       for (auto &pB : B) { blas::ax(5e3 / sqrt(blas::norm2(*pB)), *pB); }
-      commGlobalReductionPop();
 
       saveTuneCache();
 
@@ -242,7 +240,7 @@ namespace quda
         std::array<double, 5> a = {};
 
         for (const auto &phi : B) {
-          chi2 += cost(ref, base, chi, *phi);
+          chi2 += loss(ref, base, chi, *phi);
           // ATx(ATphi, *phi, T);
           madwf_ml::transfer_5d_hh<transfer_float, transfer_type>(*forward_tmp, *phi, device_param, false);
           base(ATphi, *forward_tmp);
@@ -275,7 +273,7 @@ namespace quda
         // line search
         for (const auto &phi : B) {
 
-          double ind_chi2 = cost(ref, base, chi, *phi);
+          double ind_chi2 = loss(ref, base, chi, *phi);
           chi2 += ind_chi2;
 
           // ATx(ATphi, *phi, T);
@@ -346,7 +344,7 @@ namespace quda
       printfQuda("Training finished ...\n");
       count = 0;
       for (const auto &phi : B) {
-        double ind_chi2 = cost(ref, base, chi, *phi);
+        double ind_chi2 = loss(ref, base, chi, *phi);
         commGlobalReductionPush(false);
         double phi2 = blas::norm2(*phi);
         commGlobalReductionPop();

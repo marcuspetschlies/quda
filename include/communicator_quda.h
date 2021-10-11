@@ -642,7 +642,10 @@ struct Communicator {
 
   bool commGlobalReduction() { return globalReduce.top(); }
 
-  void commGlobalReductionPush(bool global_reduction) { globalReduce.push(global_reduction); }
+  void commGlobalReductionPush(bool global_reduction) {
+    if (comm_rank() == 0) { printf("push %s\n", global_reduction ? "true" : "false"); }
+    globalReduce.push(global_reduction);
+  }
 
   void commGlobalReductionPop() { globalReduce.pop(); }
 

@@ -612,6 +612,7 @@ template <typename sComplex> sComplex cpow(const sComplex &x, int y)
 template <typename sFloat, typename sComplex>
 void mdslashReference_5th_inv(sFloat *res, sFloat *spinorField, int oddBit, int daggerBit, sFloat mferm, sComplex *kappa)
 {
+#if 0
   sComplex *inv_Ftr = (sComplex *)malloc(Ls * sizeof(sComplex));
   sComplex *Ftr = (sComplex *)malloc(Ls * sizeof(sComplex));
   for (int xs = 0; xs < Ls; xs++) {
@@ -684,6 +685,7 @@ void mdslashReference_5th_inv(sFloat *res, sFloat *spinorField, int oddBit, int 
   }
   free(inv_Ftr);
   free(Ftr);
+#endif
 }
 
 template <typename sFloat>

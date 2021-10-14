@@ -5874,175 +5874,158 @@ void performWFlownStep(unsigned int n_steps, double step_size, int meas_interval
  ******************************************************************/
 void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsigned int n_steps, double step_size, int meas_interval, QudaWFlowType wflow_type)
 {
-  pushOutputPrefix("performWFlownStep: ");
-  profileGFlow.TPSTART(QUDA_PROFILE_TOTAL);
 
-  if (gaugePrecise == nullptr) errorQuda("[performGFlownStep] Gauge field must be loaded");
+  //profileGFlow.TPSTART(QUDA_PROFILE_TOTAL);
 
-  if (gaugeSmeared != nullptr) delete gaugeSmeared;
-  gaugeSmeared = createExtendedGauge(*gaugePrecise, R, profileGFlow);
+  if (gaugePrecise == nullptr) errorQuda("Gauge field must be loaded");
 
-  GaugeFieldParam gParamEx(*gaugeSmeared);
-  auto *gaugeAux = GaugeField::Create(gParamEx);
+  pushVerbosity(inv_param->verbosity);
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printQudaInvertParam(inv_param);
 
-  GaugeFieldParam gParam(*gaugePrecise);
-  gParam.reconstruct = QUDA_RECONSTRUCT_NO; // temporary field is not on manifold so cannot use reconstruct
-  auto *gaugeTemp = GaugeField::Create(gParam);
+  cudaGaugeField *precise = nullptr;
 
-  GaugeField *in = gaugeSmeared;
-  GaugeField *out = gaugeAux;
+  if (gaugeSmeared != nullptr) {
+    if (getVerbosity() >= QUDA_VERBOSE) printfQuda("GF done with gaugeSmeared\n");
+    GaugeFieldParam gParam(*gaugePrecise);
+    gParam.create = QUDA_NULL_FIELD_CREATE;
+    precise = new cudaGaugeField(gParam);
+    copyExtendedGauge(*precise, *gaugeSmeared, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
+  } else {
+    if (getVerbosity() >= QUDA_VERBOSE)
+      printfQuda("GF smearing done with gaugePrecise\n");
+    precise = gaugePrecise;
+  }
 
-  QudaGaugeObservableParam param = newQudaGaugeObservableParam();
-  param.compute_plaquette = QUDA_BOOLEAN_TRUE;
-  param.compute_qcharge = QUDA_BOOLEAN_TRUE;
-
-  ColorSpinorParam cpuParam(h_in, *inv_param, in->X(), false, inv_param->input_location);
+  ColorSpinorParam cpuParam(h_in, *inv_param, precise->X(), false, inv_param->input_location);
   ColorSpinorField *in_h = ColorSpinorField::Create(cpuParam);
 
   ColorSpinorParam cudaParam(cpuParam, *inv_param);
-  cudaColorSpinorField f_in(*in_h, cudaParam);
+  cudaColorSpinorField in(*in_h, cudaParam);
 
-  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE) 
-  {
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
     double cpu = blas::norm2(*in_h);
-    double gpu = blas::norm2(f_in);
+    double gpu = blas::norm2(in);
     printfQuda("In CPU %e CUDA %e\n", cpu, gpu);
   }
 
   cudaParam.create = QUDA_NULL_FIELD_CREATE;
-  // cudaParam.create = QUDA_ZERO_FIELD_CREATE;
-  cudaColorSpinorField f_temp0(f_in, cudaParam);
-  cudaColorSpinorField f_temp1(f_in, cudaParam);
-  cudaColorSpinorField f_temp2(f_in, cudaParam);
-  cudaColorSpinorField f_temp3(f_in, cudaParam);
-  cudaColorSpinorField f_temp4(f_in, cudaParam);
-  
-  // if (getVerbosity() >= QUDA_SUMMARIZE) 
-  {
-    gaugeObservables(*in, param, profileGFlow);
-    printfQuda("flow t, plaquette, E_tot, E_spatial, E_temporal, Q charge\n");
-    printfQuda("%le %.16e %+.16e %+.16e %+.16e %+.16e\n", 0.0, param.plaquette[0], param.energy[0], param.energy[1],
-               param.energy[2], param.qcharge);
-  }
+  cudaColorSpinorField out(in, cudaParam);
+  int parity = 0;
 
-  int comm_dim[4] = {};
+  // Computes out(x) = 1/(1+6*alpha)*(in(x) + alpha*\sum_mu (U_{-\mu}(x)in(x+mu) + U^\dagger_mu(x-mu)in(x-mu)))
+  double a =  1.;
+  double b = -8.;
+
+  int comm_dim[4] = { };
   // only switch on comms needed for directions with a derivative
   for (int i = 0; i < 4; i++) {
     comm_dim[i] = comm_dim_partitioned(i);
-  }                       
+  }
+
   printfQuda("comm_dim = %2d %2d %2d %2d\n", comm_dim[0], comm_dim[1], comm_dim[2], comm_dim[3] );
+      
+  // auxilliary fermino fields
+  cudaColorSpinorField f_temp0 ( in, cudaParam );
+  cudaColorSpinorField f_temp1 ( in, cudaParam );
+  cudaColorSpinorField f_temp2 ( in, cudaParam );
+  cudaColorSpinorField f_temp3 ( in, cudaParam );
+  cudaColorSpinorField f_temp4 ( in, cudaParam );
 
-  int const parity = 0;
-  bool const dagger = false;
-  int const skipdir = 4;  // i.e. do not skip spatial 0,1,2 or temporal direction 3
-  double const laplace_a =   1.;
-  double const laplace_b =  -8.;
+  // blas::copy ( f_temp3, in );
+  f_temp3 = in;
 
-  // *******************************************
-  // * copy input field f_in to f_temp3
-  // *******************************************
-  blas::copy(f_temp3, f_in);
-    
-  for (unsigned int i = 0; i < n_steps; i++)
-  {
-    // Perform W1, W2, and Vt Wilson Flow steps as defined in
-    // https://arxiv.org/abs/1006.4518v3
-    profileGFlow.TPSTART(QUDA_PROFILE_COMPUTE);
+  // loop, iterations of gf
+  for (unsigned int i = 0; i < n_steps; i++) {
 
-    if (i > 0) std::swap(in, out); // output from prior step becomes input for next step
-
-    // *******************************************
+    // init auxilliary fields 0 - 2 as 3 = in field
+    //blas::copy ( f_temp0, f_temp3 );
+    //blas::copy ( f_temp1, f_temp3 );
+    //blas::copy ( f_temp2, f_temp3 );
+    f_temp0 = f_temp3;
+    f_temp1 = f_temp3;
+    f_temp2 = f_temp3;
+ 
+    // ******************************************************
     // * STEP 1
-    // *******************************************
-    blas::copy(f_temp0, f_temp3);
-    blas::copy(f_temp1, f_temp0);
-    blas::copy(f_temp2, f_temp0);
+    // ******************************************************
 
-#if 0
-    {
-      double gpu0 = blas::norm2 ( f_temp0 );
-      double gpu1 = blas::norm2 ( f_temp1 );
-      double gpu2 = blas::norm2 ( f_temp2 );
-      double gpu3 = blas::norm2 ( f_temp3 );
-      double gpu4 = blas::norm2 ( f_temp4 );
-      printfQuda("# [performGFlownStep] before Iter%d  GPU 0 %e 1 %e 2 %e 3 %e 4 %e\n", i, gpu0, gpu1, gpu2, gpu3, gpu4 );
-    }
-#endif
+    // ApplyLaplace(out, in, *precise, 4, a, b, in, parity, false, comm_dim, profileGFlow );
+    ApplyLaplace ( f_temp4, f_temp0, *precise, 4, a, b, f_temp0, parity, false, comm_dim, profileGFlow );
 
-    // *******************************************
-    // * Apply the Laplace operator
-    // *******************************************
-    ApplyLaplace ( f_temp4, f_temp0, *in, skipdir, laplace_a, laplace_b, f_temp0, parity, dagger, comm_dim, profileWFlow );
+    // [0] = [4] = Laplace 0 = Laplace 3
+    // blas::copy(f_temp0, f_temp4);
+    f_temp0 = f_temp4;
 
-    blas::copy(f_temp0, f_temp4);
+    // [1] <- epsilon/4 x [0] + [1] = [3] + epsilon /4 x Laplace [3]
     blas::axpy(step_size/4., f_temp0, f_temp1);
 
-    // TEST
-    blas::copy(f_temp3, f_temp4);
 
-
-    WFlowStep(*out, *gaugeTemp, *in, step_size, wflow_type, 1);
-
-#if 0
-
-    // *******************************************
+    // ******************************************************
     // * STEP 2
-    // *******************************************
-    blas::copy(f_temp3, f_temp1);
+    // ******************************************************
+    
+    // [3] <- [1]
+    // blas::copy(f_temp3, f_temp1);
+    f_temp3 = f_temp1;
+    
+    // [4] <- Laplace [1]
+    ApplyLaplace ( f_temp4, f_temp1, *precise, 4, a, b, f_temp1, parity, false, comm_dim, profileGFlow );
 
-    ApplyLaplace(f_temp4, f_temp1, *out, skipdir, laplace_a, laplace_b, f_temp1, parity, dagger, commDims, profileWFlow);
-    blas::copy(f_temp1, f_temp4);
+    // [1] <- [4]
+    // blas::copy(f_temp1, f_temp4);
+    f_temp1 =  f_temp4;
 
-    blas::axpy(step_size*8./9., f_temp1, f_temp2);
-    blas::axpy(-step_size*2./9., f_temp0, f_temp2);
+    // [2] <- 8/9 x epsilon x [1] + [2]
+    blas::axpy (  step_size*8./9., f_temp1, f_temp2 );
 
-    WFlowStep(*in, *gaugeTemp, *out, step_size, wflow_type, 2);
+    // [2] <- -2/9 x epsilon x [0] + [2]
+    blas::axpy ( -step_size*2./9., f_temp0, f_temp2 );
 
-    // *******************************************
+    // ******************************************************
     // * STEP 3
-    // *******************************************
-    ApplyLaplace(f_temp4, f_temp2, *in, skipdir, laplace_a, laplace_b, f_temp2, parity, dagger, commDims, profileWFlow);
-    blas::copy(f_temp2, f_temp4);
+    // ******************************************************
+    
+    // [4] <- Laplace [2]
+    ApplyLaplace ( f_temp4, f_temp2, *precise, 4, a, b, f_temp2, parity, false, comm_dim, profileGFlow );
 
-    blas::axpy(step_size*3./4., f_temp2, f_temp3);
+    // [2] <- [4] = Laplace [2]
+    // blas::copy ( f_temp2, f_temp4 );
+    f_temp2 = f_temp4;
+    
+    // [3] <- 3/4 x epsilon x [2] + [3]
+    blas::axpy ( step_size*3./4., f_temp2, f_temp3 );
 
-    WFlowStep(*out, *gaugeTemp, *in, step_size, wflow_type, 3);
+    out = f_temp3;
 
 
-#endif
-
-    profileGFlow.TPSTOP(QUDA_PROFILE_COMPUTE);
-
-    // if ((i + 1) % meas_interval == 0 && getVerbosity() >= QUDA_SUMMARIZE)
-    {
-      gaugeObservables(*out, param, profileGFlow);
-      printfQuda("%le %.16e %+.16e %+.16e %+.16e %+.16e\n", step_size * (i + 1), param.plaquette[0], param.energy[0],
-                 param.energy[1], param.energy[2], param.qcharge);
+    if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
+      double norm = blas::norm2(out);
+      printfQuda("Step %d, vector norm %e\n", i, norm);
     }
-
-
-  }  // end of loop on gf steps
+  }
 
   cpuParam.v = h_out;
   cpuParam.location = inv_param->output_location;
   ColorSpinorField *out_h = ColorSpinorField::Create(cpuParam);
-  *out_h = f_temp3;
+  *out_h = out;
 
-  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
-  {
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
     double cpu = blas::norm2(*out_h);
-    double gpu = blas::norm2(f_temp3);
+    double gpu = blas::norm2(out);
     printfQuda("Out CPU %e CUDA %e\n", cpu, gpu);
   }
 
-  delete in_h;
+  if (gaugeSmeared != nullptr)
+    delete precise;
+
   delete out_h;
+  delete in_h;
 
+  popVerbosity();
 
-  delete gaugeTemp;
-  delete gaugeAux;
-  profileGFlow.TPSTOP(QUDA_PROFILE_TOTAL);
-  popOutputPrefix();
+  //profileGFlow.TPSTOP(QUDA_PROFILE_TOTAL);
+
 }  /* end of performGFlownStep */
 
 int computeGaugeFixingOVRQuda(void *gauge, const unsigned int gauge_dir, const unsigned int Nsteps,

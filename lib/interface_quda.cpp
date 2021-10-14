@@ -5875,26 +5875,65 @@ void performWFlownStep(unsigned int n_steps, double step_size, int meas_interval
 void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsigned int n_steps, double step_size, int meas_interval, QudaWFlowType wflow_type)
 {
 
-  //profileGFlow.TPSTART(QUDA_PROFILE_TOTAL);
+  profileWFlow.TPSTART(QUDA_PROFILE_TOTAL);
 
   if (gaugePrecise == nullptr) errorQuda("Gauge field must be loaded");
 
   pushVerbosity(inv_param->verbosity);
   if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printQudaInvertParam(inv_param);
 
-  cudaGaugeField *precise = nullptr;
+
+  // ******************************************************
+  // * gauge fields
+  // ******************************************************
 
   if (gaugeSmeared != nullptr) {
+
     if (getVerbosity() >= QUDA_VERBOSE) printfQuda("GF done with gaugeSmeared\n");
+    
+  } else {
+    //if (getVerbosity() >= QUDA_VERBOSE)
+    printfQuda("GF with new gaugeSmeared\n");
+    //precise = gaugePrecise;
+    gaugeSmeared = createExtendedGauge(*gaugePrecise, R, profileWFlow );
+  }
+
+  GaugeFieldParam gParamEx(*gaugeSmeared);
+  auto *gaugeAux = GaugeField::Create(gParamEx);
+
+  GaugeFieldParam gParam(*gaugePrecise);
+  gParam.reconstruct = QUDA_RECONSTRUCT_NO; // temporary field is not on manifold so cannot use reconstruct
+  // gParam.create = QUDA_NULL_FIELD_CREATE; ???
+  auto *gaugeTemp = GaugeField::Create(gParam);
+
+  GaugeField *gin  = gaugeSmeared;
+  GaugeField *gout = gaugeAux;
+
+  QudaGaugeObservableParam param = newQudaGaugeObservableParam();
+  param.compute_plaquette = QUDA_BOOLEAN_TRUE;
+  param.compute_qcharge = QUDA_BOOLEAN_TRUE;
+
+  // if (getVerbosity() >= QUDA_SUMMARIZE)
+  {
+    gaugeObservables(*gin, param, profileWFlow);
+    printfQuda("flow t, plaquette, E_tot, E_spatial, E_temporal, Q charge\n");
+    printfQuda("%le %.16e %+.16e %+.16e %+.16e %+.16e\n", 0.0, param.plaquette[0], param.energy[0], param.energy[1],
+        param.energy[2], param.qcharge);
+  }
+
+
+  // ******************************************************
+  // * spinor fields
+  // ******************************************************
+
+  cudaGaugeField *precise = nullptr;
+  {
     GaugeFieldParam gParam(*gaugePrecise);
     gParam.create = QUDA_NULL_FIELD_CREATE;
     precise = new cudaGaugeField(gParam);
-    copyExtendedGauge(*precise, *gaugeSmeared, QUDA_CUDA_FIELD_LOCATION);
+    // copyExtendedGauge(*precise, *gaugePrecise, QUDA_CUDA_FIELD_LOCATION);
+    copyExtendedGauge(*precise, *gin, QUDA_CUDA_FIELD_LOCATION);
     precise->exchangeGhost();
-  } else {
-    if (getVerbosity() >= QUDA_VERBOSE)
-      printfQuda("GF smearing done with gaugePrecise\n");
-    precise = gaugePrecise;
   }
 
   ColorSpinorParam cpuParam(h_in, *inv_param, precise->X(), false, inv_param->input_location);
@@ -5903,7 +5942,8 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
   ColorSpinorParam cudaParam(cpuParam, *inv_param);
   cudaColorSpinorField in(*in_h, cudaParam);
 
-  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+  {
     double cpu = blas::norm2(*in_h);
     double gpu = blas::norm2(in);
     printfQuda("In CPU %e CUDA %e\n", cpu, gpu);
@@ -5938,6 +5978,8 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
   // loop, iterations of gf
   for (unsigned int i = 0; i < n_steps; i++) {
 
+    if ( i > 0 ) std::swap ( gin, gout ); // output from prior step becomes input for next step
+
     // init auxilliary fields 0 - 2 as 3 = in field
     //blas::copy ( f_temp0, f_temp3 );
     //blas::copy ( f_temp1, f_temp3 );
@@ -5950,7 +5992,7 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
     // * STEP 1
     // ******************************************************
 
-    // ApplyLaplace(out, in, *precise, 4, a, b, in, parity, false, comm_dim, profileGFlow );
+    // [4] = Laplace [0]
     ApplyLaplace ( f_temp4, f_temp0, *precise, 4, a, b, f_temp0, parity, false, comm_dim, profileGFlow );
 
     // [0] = [4] = Laplace 0 = Laplace 3
@@ -5959,6 +6001,13 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
 
     // [1] <- epsilon/4 x [0] + [1] = [3] + epsilon /4 x Laplace [3]
     blas::axpy(step_size/4., f_temp0, f_temp1);
+
+        
+    // apply 1st step of gauge field flow part
+    WFlowStep ( *gout, *gaugeTemp, *gin, step_size, wflow_type, 1);
+
+    copyExtendedGauge(*precise, *gout, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
 
 
     // ******************************************************
@@ -5982,6 +6031,13 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
     // [2] <- -2/9 x epsilon x [0] + [2]
     blas::axpy ( -step_size*2./9., f_temp0, f_temp2 );
 
+        
+    // apply 2nd step of gauge field flow part
+    WFlowStep ( *gin, *gaugeTemp, *gout, step_size, wflow_type, 2);
+
+    copyExtendedGauge(*precise, *gin, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
+
     // ******************************************************
     // * STEP 3
     // ******************************************************
@@ -5998,33 +6054,55 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
 
     out = f_temp3;
 
+    // apply 3rd step of gauge field flow part
+    WFlowStep ( *gout, *gaugeTemp, *gin, step_size, wflow_type, 3);
 
-    if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
+    copyExtendedGauge(*precise, *gout, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
+
+
+    // if (getVerbosity() >= QUDA_DEBUG_VERBOSE) 
+    {
       double norm = blas::norm2(out);
       printfQuda("Step %d, vector norm %e\n", i, norm);
     }
+
+
+  // if (getVerbosity() >= QUDA_SUMMARIZE)
+  {
+    gaugeObservables( *gout, param, profileWFlow);
+    printfQuda("flow t, plaquette, E_tot, E_spatial, E_temporal, Q charge\n");
+    printfQuda("%le %.16e %+.16e %+.16e %+.16e %+.16e\n", 0.0, param.plaquette[0], param.energy[0], param.energy[1],
+        param.energy[2], param.qcharge);
   }
+
+  }  /* end of one iteration of GF application */
 
   cpuParam.v = h_out;
   cpuParam.location = inv_param->output_location;
   ColorSpinorField *out_h = ColorSpinorField::Create(cpuParam);
   *out_h = out;
 
-  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+  {
     double cpu = blas::norm2(*out_h);
     double gpu = blas::norm2(out);
     printfQuda("Out CPU %e CUDA %e\n", cpu, gpu);
   }
 
-  if (gaugeSmeared != nullptr)
-    delete precise;
+
+  delete gaugeTemp;
+  delete gaugeAux;
+
+
+  delete precise;
 
   delete out_h;
   delete in_h;
 
   popVerbosity();
 
-  //profileGFlow.TPSTOP(QUDA_PROFILE_TOTAL);
+  profileWFlow.TPSTOP(QUDA_PROFILE_TOTAL);
 
 }  /* end of performGFlownStep */
 

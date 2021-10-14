@@ -170,6 +170,9 @@ namespace quda
 #endif
       } else if (in.Nspin() == 4) {
 #if defined(GPU_WILSON_DIRAC) && defined(GPU_LAPLACE)
+            
+        // printfQuda("# [LaplaceApply]  a = %e  b = %e\n", a, b);
+
         constexpr int nDim = 4;
         constexpr int nSpin = 4;
         LaplaceArg<Float, nSpin, nColor, nDim, recon> arg(out, in, U, dir, a, b, x, parity, dagger, comm_override);
@@ -194,6 +197,8 @@ namespace quda
   void ApplyLaplace(ColorSpinorField &out, const ColorSpinorField &in, const GaugeField &U, int dir, double a, double b,
                     const ColorSpinorField &x, int parity, bool dagger, const int *comm_override, TimeProfile &profile)
   {
+    // printfQuda("# [ApplyLaplace]  a = %e  b = %e\n", a, b);
+
     instantiate<LaplaceApply>(out, in, U, dir, a, b, x, parity, dagger, comm_override, profile);
   }
 } // namespace quda

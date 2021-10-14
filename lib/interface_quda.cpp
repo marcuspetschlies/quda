@@ -67,7 +67,7 @@ void checkBLASParam(QudaBLASParam &param) { checkBLASParam(&param); }
 using namespace quda;
 
 static int R[4] = {0, 0, 0, 0};
-const int commDims[4] = {1, 1, 1, 1};
+// const int commDims[4] = {1, 1, 1, 1};
 // setting this to false prevents redundant halo exchange but isn't yet compatible with HISQ / ASQTAD kernels
 static bool redundant_comms = false;
 
@@ -5605,6 +5605,12 @@ void copyExtendedResidentGaugeQuda(void* resident_gauge, QudaFieldLocation loc)
   //profilePlaq.TPSTOP(QUDA_PROFILE_TOTAL);
 }
 
+/******************************************************************/
+/******************************************************************/
+
+/******************************************************************
+ *
+ ******************************************************************/
 void performWuppertalnStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsigned int n_steps, double alpha)
 {
   //profileWuppertal.TPSTART(QUDA_PROFILE_TOTAL);
@@ -5649,9 +5655,22 @@ void performWuppertalnStep(void *h_out, void *h_in, QudaInvertParam *inv_param, 
   double a = alpha / (1. + 6. * alpha);
   double b = 1. / (1. + 6. * alpha);
 
+
+  int comm_dim[4] = { };
+  // only switch on comms needed for directions with a derivative
+  for (int i = 0; i < 4; i++) {
+    comm_dim[i] = comm_dim_partitioned(i);
+  }
+
+  printfQuda("comm_dim = %2d %2d %2d %2d\n", comm_dim[0], comm_dim[1], comm_dim[2], comm_dim[3] );
+    
+
   for (unsigned int i = 0; i < n_steps; i++) {
     if (i) in = out;
-    ApplyLaplace(out, in, *precise, 3, a, b, in, parity, false, commDims, profileWuppertal);
+    
+    // ApplyLaplace(out, in, *precise, 3, a, b, in, parity, false, commDims, profileWuppertal);
+    ApplyLaplace(out, in, *precise, 4, a, b, in, parity, false, comm_dim, profileWuppertal);
+
     if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
       double norm = blas::norm2(out);
       printfQuda("Step %d, vector norm %e\n", i, norm);
@@ -5678,7 +5697,10 @@ void performWuppertalnStep(void *h_out, void *h_in, QudaInvertParam *inv_param, 
   popVerbosity();
 
   //profileWuppertal.TPSTOP(QUDA_PROFILE_TOTAL);
-}
+}  /* performWuppertalnStep */
+
+/******************************************************************/
+/******************************************************************/
 
 void performAPEnStep(unsigned int n_steps, double alpha, int meas_interval)
 {
@@ -5714,6 +5736,9 @@ void performAPEnStep(unsigned int n_steps, double alpha, int meas_interval)
   profileAPE.TPSTOP(QUDA_PROFILE_TOTAL);
 }
 
+/******************************************************************/
+/******************************************************************/
+
 void performSTOUTnStep(unsigned int n_steps, double rho, int meas_interval)
 {
   profileSTOUT.TPSTART(QUDA_PROFILE_TOTAL);
@@ -5748,6 +5773,9 @@ void performSTOUTnStep(unsigned int n_steps, double rho, int meas_interval)
   profileSTOUT.TPSTOP(QUDA_PROFILE_TOTAL);
 }
 
+/******************************************************************/
+/******************************************************************/
+
 void performOvrImpSTOUTnStep(unsigned int n_steps, double rho, double epsilon, int meas_interval)
 {
   profileOvrImpSTOUT.TPSTART(QUDA_PROFILE_TOTAL);
@@ -5781,6 +5809,9 @@ void performOvrImpSTOUTnStep(unsigned int n_steps, double rho, double epsilon, i
   delete cudaGaugeTemp;
   profileOvrImpSTOUT.TPSTOP(QUDA_PROFILE_TOTAL);
 }
+
+/******************************************************************/
+/******************************************************************/
 
 void performWFlownStep(unsigned int n_steps, double step_size, int meas_interval, QudaWFlowType wflow_type)
 {
@@ -5835,12 +5866,18 @@ void performWFlownStep(unsigned int n_steps, double step_size, int meas_interval
   popOutputPrefix();
 }
 
+/******************************************************************/
+/******************************************************************/
+
+/******************************************************************
+ * Gradient flow for gauge + fermion field
+ ******************************************************************/
 void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsigned int n_steps, double step_size, int meas_interval, QudaWFlowType wflow_type)
 {
   pushOutputPrefix("performWFlownStep: ");
   profileGFlow.TPSTART(QUDA_PROFILE_TOTAL);
 
-  if (gaugePrecise == nullptr) errorQuda("Gauge field must be loaded");
+  if (gaugePrecise == nullptr) errorQuda("[performGFlownStep] Gauge field must be loaded");
 
   if (gaugeSmeared != nullptr) delete gaugeSmeared;
   gaugeSmeared = createExtendedGauge(*gaugePrecise, R, profileGFlow);
@@ -5865,49 +5902,95 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
   ColorSpinorParam cudaParam(cpuParam, *inv_param);
   cudaColorSpinorField f_in(*in_h, cudaParam);
 
-  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE) 
+  {
     double cpu = blas::norm2(*in_h);
     double gpu = blas::norm2(f_in);
     printfQuda("In CPU %e CUDA %e\n", cpu, gpu);
   }
 
   cudaParam.create = QUDA_NULL_FIELD_CREATE;
+  // cudaParam.create = QUDA_ZERO_FIELD_CREATE;
   cudaColorSpinorField f_temp0(f_in, cudaParam);
   cudaColorSpinorField f_temp1(f_in, cudaParam);
   cudaColorSpinorField f_temp2(f_in, cudaParam);
   cudaColorSpinorField f_temp3(f_in, cudaParam);
   cudaColorSpinorField f_temp4(f_in, cudaParam);
   
-  blas::copy(f_temp3, f_in);
-
-  if (getVerbosity() >= QUDA_SUMMARIZE) {
+  // if (getVerbosity() >= QUDA_SUMMARIZE) 
+  {
     gaugeObservables(*in, param, profileGFlow);
     printfQuda("flow t, plaquette, E_tot, E_spatial, E_temporal, Q charge\n");
     printfQuda("%le %.16e %+.16e %+.16e %+.16e %+.16e\n", 0.0, param.plaquette[0], param.energy[0], param.energy[1],
                param.energy[2], param.qcharge);
   }
 
-  for (unsigned int i = 0; i < n_steps; i++) {
+  int comm_dim[4] = {};
+  // only switch on comms needed for directions with a derivative
+  for (int i = 0; i < 4; i++) {
+    comm_dim[i] = comm_dim_partitioned(i);
+  }                       
+  printfQuda("comm_dim = %2d %2d %2d %2d\n", comm_dim[0], comm_dim[1], comm_dim[2], comm_dim[3] );
+
+  int const parity = 0;
+  bool const dagger = false;
+  int const skipdir = 4;  // i.e. do not skip spatial 0,1,2 or temporal direction 3
+  double const laplace_a =   1.;
+  double const laplace_b =  -8.;
+
+  // *******************************************
+  // * copy input field f_in to f_temp3
+  // *******************************************
+  blas::copy(f_temp3, f_in);
+    
+  for (unsigned int i = 0; i < n_steps; i++)
+  {
     // Perform W1, W2, and Vt Wilson Flow steps as defined in
     // https://arxiv.org/abs/1006.4518v3
     profileGFlow.TPSTART(QUDA_PROFILE_COMPUTE);
+
     if (i > 0) std::swap(in, out); // output from prior step becomes input for next step
 
-    //STEP 1
+    // *******************************************
+    // * STEP 1
+    // *******************************************
     blas::copy(f_temp0, f_temp3);
     blas::copy(f_temp1, f_temp0);
     blas::copy(f_temp2, f_temp0);
 
-    ApplyLaplace(f_temp4, f_temp0, *in, 4, 1., -8., f_temp0, 0, false, commDims, profileWFlow);
+#if 0
+    {
+      double gpu0 = blas::norm2 ( f_temp0 );
+      double gpu1 = blas::norm2 ( f_temp1 );
+      double gpu2 = blas::norm2 ( f_temp2 );
+      double gpu3 = blas::norm2 ( f_temp3 );
+      double gpu4 = blas::norm2 ( f_temp4 );
+      printfQuda("# [performGFlownStep] before Iter%d  GPU 0 %e 1 %e 2 %e 3 %e 4 %e\n", i, gpu0, gpu1, gpu2, gpu3, gpu4 );
+    }
+#endif
+
+    // *******************************************
+    // * Apply the Laplace operator
+    // *******************************************
+    ApplyLaplace ( f_temp4, f_temp0, *in, skipdir, laplace_a, laplace_b, f_temp0, parity, dagger, comm_dim, profileWFlow );
+
     blas::copy(f_temp0, f_temp4);
     blas::axpy(step_size/4., f_temp0, f_temp1);
 
+    // TEST
+    blas::copy(f_temp3, f_temp4);
+
+
     WFlowStep(*out, *gaugeTemp, *in, step_size, wflow_type, 1);
 
-    //STEP 2
+#if 0
+
+    // *******************************************
+    // * STEP 2
+    // *******************************************
     blas::copy(f_temp3, f_temp1);
 
-    ApplyLaplace(f_temp4, f_temp1, *out, 4, 1., -8., f_temp1, 0, false, commDims, profileWFlow);
+    ApplyLaplace(f_temp4, f_temp1, *out, skipdir, laplace_a, laplace_b, f_temp1, parity, dagger, commDims, profileWFlow);
     blas::copy(f_temp1, f_temp4);
 
     blas::axpy(step_size*8./9., f_temp1, f_temp2);
@@ -5915,28 +5998,38 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
 
     WFlowStep(*in, *gaugeTemp, *out, step_size, wflow_type, 2);
 
-    //STEP 3
-    ApplyLaplace(f_temp4, f_temp2, *in, 4, 1., -8., f_temp2, 0, false, commDims, profileWFlow);
+    // *******************************************
+    // * STEP 3
+    // *******************************************
+    ApplyLaplace(f_temp4, f_temp2, *in, skipdir, laplace_a, laplace_b, f_temp2, parity, dagger, commDims, profileWFlow);
     blas::copy(f_temp2, f_temp4);
 
     blas::axpy(step_size*3./4., f_temp2, f_temp3);
 
     WFlowStep(*out, *gaugeTemp, *in, step_size, wflow_type, 3);
+
+
+#endif
+
     profileGFlow.TPSTOP(QUDA_PROFILE_COMPUTE);
 
-    if ((i + 1) % meas_interval == 0 && getVerbosity() >= QUDA_SUMMARIZE) {
+    // if ((i + 1) % meas_interval == 0 && getVerbosity() >= QUDA_SUMMARIZE)
+    {
       gaugeObservables(*out, param, profileGFlow);
       printfQuda("%le %.16e %+.16e %+.16e %+.16e %+.16e\n", step_size * (i + 1), param.plaquette[0], param.energy[0],
                  param.energy[1], param.energy[2], param.qcharge);
     }
-  }
+
+
+  }  // end of loop on gf steps
 
   cpuParam.v = h_out;
   cpuParam.location = inv_param->output_location;
   ColorSpinorField *out_h = ColorSpinorField::Create(cpuParam);
   *out_h = f_temp3;
 
-  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) {
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+  {
     double cpu = blas::norm2(*out_h);
     double gpu = blas::norm2(f_temp3);
     printfQuda("Out CPU %e CUDA %e\n", cpu, gpu);
@@ -5950,7 +6043,7 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, unsi
   delete gaugeAux;
   profileGFlow.TPSTOP(QUDA_PROFILE_TOTAL);
   popOutputPrefix();
-}
+}  /* end of performGFlownStep */
 
 int computeGaugeFixingOVRQuda(void *gauge, const unsigned int gauge_dir, const unsigned int Nsteps,
                               const unsigned int verbose_interval, const double relax_boost, const double tolerance,

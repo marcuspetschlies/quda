@@ -5841,7 +5841,7 @@ void performWFlowQuda(QudaGaugeSmearParam *smear_param, QudaGaugeObservableParam
 // ******************************************************************
 // * Gradient flow for gauge + fermion field
 // ******************************************************************
-void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const init )
+void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const update_gauge )
 {
 
   profileWFlow.TPSTART(QUDA_PROFILE_TOTAL);
@@ -6099,15 +6099,16 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, Quda
 
   }  /* end of one iteration of GF application */
 
-  // update gin = gaugeFlowed, for next call without init
   // ****************************
-  // * NO EXCHANGE BY HAND HERE *
+  // * update gauge field, if wanted
   // ****************************
-  //if ( init == 2 || init == 3 ) 
-  //{
+  if ( update_gauge ) 
+  {
+    printfQuda("performGFlownStep update resident gaugeFlowed\n");
+
     copyExtendedGauge( *gaugeFlowed, *gout, QUDA_CUDA_FIELD_LOCATION);
     gaugeFlowed->exchangeExtendedGhost( gaugeFlowed->R() );
-  //}
+  }
       
   // if (getVerbosity() >= QUDA_DEBUG_VERBOSE )
   {

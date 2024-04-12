@@ -6157,6 +6157,374 @@ void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, Quda
 // ******************************************************************
 // ******************************************************************
 
+
+// ******************************************************************
+// * Gradient flow for gauge + fermion field
+// *
+// * adjoint flow
+// *
+// * What about this profiling? ApplyLaplace should have its own profile
+// * variable ? Not use the WFlow one?
+// *
+// * What profiling for WFlowStep ? Is there an internal one for
+// * this function? None is passed here.
+// ******************************************************************
+void performGFlowStepAdjoint ( void *h_out, void *h_in, void *gFlowv, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const update_gauge , int const update_fermion)
+{
+
+  profileWFlow.TPSTART(QUDA_PROFILE_TOTAL);
+
+  cudaGaugeField * gFlow = (cudaGaugeField *)gFlowv;
+
+  if (gFlow == nullptr) errorQuda("[performGFlownStepAdjoint] Flowed gauge field must be loaded");
+
+  pushVerbosity(inv_param->verbosity);
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE) printQudaInvertParam(inv_param);
+
+  // auxilliary gauge fields to hold
+  // gradient flow RK4 steps of gauge field 
+  // in memory
+  GaugeFieldParam gParamEx( *gFlow );
+  auto *gw1 = GaugeField::Create(gParamEx);
+  auto *gw2 = GaugeField::Create(gParamEx);
+  auto *gw3 = GaugeField::Create(gParamEx);
+
+  GaugeFieldParam gParam( *gFlow );
+  gParam.reconstruct = QUDA_RECONSTRUCT_NO; // temporary field is not on manifold so cannot use reconstruct
+  // gParam.create = QUDA_NULL_FIELD_CREATE; ???
+  auto *gaugeTemp = GaugeField::Create(gParam);
+
+  // ******************************************************
+  // * set gw1 gauge field
+  // ******************************************************
+  copyExtendedGauge (*gw1, *gFlow, QUDA_CUDA_FIELD_LOCATION);
+  gFlow->exchangeExtendedGhost( gw1->R() );
+
+  // ******************************************************
+  // * observables for input gauge field
+  // ******************************************************
+  QudaGaugeObservableParam param = newQudaGaugeObservableParam();
+  param.compute_plaquette = QUDA_BOOLEAN_TRUE;
+  param.compute_qcharge = QUDA_BOOLEAN_TRUE;
+
+  // if (getVerbosity() >= QUDA_SUMMARIZE)
+  {
+    gaugeObservables(*gw1, param, profileWFlow);
+    printfQuda("# [performGFlownStepAdjoint] in flow t, plaquette, E_tot, E_spatial, E_temporal, Q charge\n");
+    printfQuda("# [performGFlownStepAdjoint] %le %.16e %+.16e %+.16e %+.16e %+.16e\n", 
+        0.0, param.plaquette[0], param.energy[0], param.energy[1], param.energy[2], param.qcharge);
+  }
+
+  // ******************************************************
+  // * helper gauge field for Laplace operator
+  // *
+  // * same question as in fwd flow: can we not use one 
+  //   of the already existing gauge fields for that ???
+  // ******************************************************
+  cudaGaugeField *precise = nullptr;
+  {
+    // GaugeFieldParam gParam ( *gFlow );
+    GaugeFieldParam gParam(*gaugePrecise);
+    gParam.create = QUDA_NULL_FIELD_CREATE;
+    precise = new cudaGaugeField(gParam);
+    // copyExtendedGauge(*precise, *gin, QUDA_CUDA_FIELD_LOCATION);
+    // precise->exchangeGhost();
+  }
+
+  // ******************************************************
+  // * spinor fields
+  //
+  // * Why is in_h needed ?
+  // ******************************************************
+  ColorSpinorParam cpuParam(h_in, *inv_param, precise->X(), false, inv_param->input_location);
+  ColorSpinorField in_h(cpuParam);
+
+  ColorSpinorParam cudaParam(cpuParam, *inv_param, QUDA_CUDA_FIELD_LOCATION);
+  ColorSpinorField in(cudaParam);
+  in = in_h;
+
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+  {
+    double cpu = blas::norm2(in_h);
+    double gpu = blas::norm2(in);
+    printfQuda("# [performGFlownStepAdjoint] In CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+  }
+
+  cudaParam.create = QUDA_NULL_FIELD_CREATE;
+  ColorSpinorField out(cudaParam);
+
+  int parity = 0;
+
+  // Computes out(x) = 1/(1+6*alpha)*(in(x) + alpha*\sum_mu (U_{-\mu}(x)in(x+mu) + U^\dagger_mu(x-mu)in(x-mu)))
+  double a =  1.;
+  double b = -8.;
+
+  int comm_dim[4] = { };
+  // switch on comms needed for directions with a derivative
+  for (int i = 0; i < 4; i++) {
+    comm_dim[i] = comm_dim_partitioned(i);
+  }
+
+  printfQuda("# [performGFlownStepAdjoint] comm_dim = %2d %2d %2d %2d\n", comm_dim[0], comm_dim[1], comm_dim[2], comm_dim[3] );
+      
+  // auxilliary fermion fields
+  ColorSpinorField f_temp0 ( cudaParam );
+  ColorSpinorField f_temp1 ( cudaParam );
+  ColorSpinorField f_temp2 ( cudaParam );
+  ColorSpinorField f_temp3 ( cudaParam );
+  ColorSpinorField f_temp4 ( cudaParam );
+
+  // ******************************************************
+  // * helper pointers to auxilliary gauge fields
+  // *
+  // * use pointer, since these will be swapped later on
+  // ******************************************************
+  GaugeField *gin  = gw2;
+  GaugeField *gout = gw1;
+  GaugeField *gint = gw3;
+
+
+  // ******************************************************
+  // * loop, iterations of gf on gauge only
+  // ******************************************************
+  if ( update_gauge )
+  {
+
+    for (unsigned int i = 0; i < smear_param->n_steps; i++) 
+    {
+      // output from prior step becomes input for next step
+      // initial state: gout set to gw1, which points the currently 
+      //                flowed gauge field gw1 at entry;
+      //                after swap gin will point to gw1
+      std::swap ( gin, gout );
+
+      // apply gauge field gradient flow (step_type = 0, so all steps)
+      WFlowStep ( *gout, *gaugeTemp, *gin, smear_param->epsilon, smear_param->smear_type, 0);
+    }
+      
+    printfQuda("# [performGFlownStepAdjoint] update gFlow\n");
+    // copy to gFlow
+    copyExtendedGauge( *gFlow, *gout, QUDA_CUDA_FIELD_LOCATION);
+    // to be safe, exchange boundary fields
+    gFlow->exchangeExtendedGhost( gFlow->R() );
+  
+  }  // end of if update_gauge
+
+  // ******************************************************
+  // * single GF step here only
+  // * application to fermion field
+  // ******************************************************
+  if ( update_fermion )
+  {
+    // swap gin and gout
+    //
+    // gout points to currently flowed gauge field, either from entry
+    // or from previous flow steps
+    // after swap gin will point to currently flowed gauge field
+    std::swap ( gin, gout );
+
+    // ******************************************************
+    // * prepare STEP 1 and STEP 2 gradient flow on gauge field
+    // * step 3 is NOT needed, because not used in Laplacian
+    // ******************************************************
+    WFlowStep ( *gint, *gaugeTemp, *gin, smear_param->epsilon, smear_param->smear_type, 1);
+
+    WFlowStep ( *gout, *gaugeTemp, *gint, smear_param->epsilon, smear_param->smear_type, 2);
+
+    // ******************************************************
+    // * now gradient flow on the fermion field
+    // ******************************************************
+  
+    // ******************************************************
+    // * lambda_3
+    // ******************************************************
+    f_temp3 = in;
+
+    // ******************************************************
+    // lambda_2
+    // ******************************************************
+     
+    // ******************************************************
+    // * here and below this maybe brute force:
+    // * we copy and exchange gauge field used in ApplyLaplace 
+    // * each time by hand right before the call to ApplyLaplace
+    // ******************************************************
+    copyExtendedGauge(*precise, *gout, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
+
+    // [2] =  Laplace_2 [3], with auxilliary field [0]
+    ApplyLaplace ( f_temp2, f_temp3, *precise, 4, a, b, f_temp0, parity, false, comm_dim, profileGFlow );
+
+    // [2] = [2] x 3/4 ( + 0 x [2] )
+    blas::axpby ( smear_param->epsilon*3./4., f_temp2, 0., f_temp2 );
+
+    // ******************************************************
+    // lambda_1
+    // ******************************************************
+
+    // [4] <- Laplace_1 [2], with auxilliary field [0]
+    copyExtendedGauge(*precise, *gint, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
+    ApplyLaplace ( f_temp4, f_temp2, *precise, 4, a, b, f_temp0, parity, false, comm_dim, profileGFlow );
+
+    // [1] <- [3]
+    f_temp1 =  f_temp3;
+
+    // [1] <- [1] + 8/9 x epsilon x [4]
+    blas::axpy (  smear_param->epsilon*8./9., f_temp4, f_temp1 );
+
+    // ******************************************************
+    // lambda_0
+    // ******************************************************
+
+    //  [0] <- [1] - 8/9 [2]
+    f_temp0 = f_temp1;
+    blas::axpy ( -smear_param->epsilon*8./9., f_temp2, f_temp0 );
+
+    // [4] <- Laplace_0 [0], with auxilliary field [3]
+    copyExtendedGauge(*precise, *gin, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
+    ApplyLaplace ( f_temp4, f_temp0, *precise, 4, a, b, f_temp3, parity, false, comm_dim, profileGFlow );
+    
+    // [0] <- [1]
+    f_temp0 = f_temp1;
+    
+    // [0] <- 1/4 x epsilon x [4] + [0]
+    blas::axpy ( smear_param->epsilon*1./4., f_temp4, f_temp0 );
+    
+    // [0] <- [2] + [0]
+    blas::axpy ( 1., f_temp2, f_temp0 );
+
+    // ******************************************************
+    // store final field to out; not really necessary ???
+    // just use f_temp0
+    // ******************************************************
+    out = f_temp0;
+
+  }  // end of GF application to fermion field
+
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE )
+  {
+    gaugeObservables( *gFlow, param, profileWFlow);
+    printfQuda("# [performGFlownStepAdjoint] out flow t, plaquette, E_tot, E_spatial, E_temporal, Q charge\n");
+    printfQuda("# [performGFlownStepAdjoint] %le %.16e %+.16e %+.16e %+.16e %+.16e\n",
+        smear_param->n_steps * smear_param->epsilon, param.plaquette[0], param.energy[0], param.energy[1],
+        param.energy[2], param.qcharge);
+  }
+
+  // store the flowed fermion field back to host
+  cpuParam.v = h_out;
+  cpuParam.location = inv_param->output_location;
+  ColorSpinorField out_h(cpuParam);
+  out_h = out;
+
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+  {
+    double cpu = blas::norm2(out_h);
+    double gpu = blas::norm2(out);
+    printfQuda("# [performGFlownStepAdjoint] Out CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+  }
+
+  delete gaugeTemp;
+  delete gw1;
+  delete gw2;
+  delete gw3;
+
+  delete precise;
+
+  // Why not delete out_h and in_h ???
+  // Why no delete on out and in ???
+  // delete out_h;
+  // delete in_h;
+
+  popVerbosity();
+
+  profileWFlow.TPSTOP(QUDA_PROFILE_TOTAL);
+
+}  /* end of performGFlownStepAdjoint */
+#if 0
+#endif  // of if 0
+
+// ******************************************************************
+// ******************************************************************
+
+// ******************************************************************
+// * wrapper for adjoint flow step
+// *
+// * store is counter for recursive calls
+// ******************************************************************
+
+void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const mb, int const nb, int const store )
+{
+
+  // static gauge fields
+  // needed for recursion; or pass a list of gauge fields
+  // as argument ???
+
+  static bool initialized = false;
+  static cudaGaugeField ** gFlowA = NULL; 
+
+  if ( !initialized  )
+  {
+    printfQuda("# [performGFlowAdjoint] run initialization\n");
+
+    gFlowA = (cudaGaugeField**)malloc ( ( store + 1 ) * sizeof ( cudaGaugeField*) );
+
+    GaugeFieldParam gauge_param(*gaugeFlowed);
+    // GaugeFieldParam gauge_param(*gaugePrecise); ???
+
+    gauge_param.create = QUDA_NULL_FIELD_CREATE;
+
+    for( int i = 0; i < store; i++)
+    {
+      gFlowA[i] = new cudaGaugeField(gauge_param);
+    }
+    gFlowA[store] = gaugeFlowed;
+    initialized = true;
+  }
+
+  if ( store == 0 )
+  {
+    for ( int i = 0; i < mb; i++ )
+    {
+      smear_param->n_steps = mb - 1 - i;
+
+      performGFlowStepAdjoint ( h_out, h_in, gFlowA[store], inv_param, smear_param, 1, 1 );
+    }
+  } else {
+    int const kb = mb % nb;
+    int const lb = mb / nb;
+    int niter = mb;
+
+    for ( int ib = 0; ib < nb; ib++ )
+    {
+      int const mb_new = ib < kb ? lb + 1 : lb;
+      
+      niter -= mb_new;
+
+      // copy partially flowed gauge field
+      copyExtendedGauge ( *(gFlowA[store-1]), *(gFlowA[store]), QUDA_CUDA_FIELD_LOCATION);
+      gFlowA[store-1]->exchangeGhost(); // check, whether halo exchange is necessary at this point
+
+
+      smear_param->n_steps = niter;
+
+      // apply gradient flow
+      performGFlowStepAdjoint ( NULL, NULL, gFlowA[store-1], inv_param, smear_param, 1, 0 );
+
+      // continue with blocking
+      performGFlowAdjoint ( h_out, h_in, inv_param, smear_param, mb_new, nb, store-1 );
+
+    }  // end of loop on blocks
+  }  // end of if store == 0, level of blocking
+
+  return;
+}
+
+// ******************************************************************
+// ******************************************************************
+
+
 int computeGaugeFixingOVRQuda(void *gauge, const unsigned int gauge_dir, const unsigned int Nsteps,
                               const unsigned int verbose_interval, const double relax_boost, const double tolerance,
                               const unsigned int reunit_interval, const unsigned int stopWtheta, QudaGaugeParam *param,

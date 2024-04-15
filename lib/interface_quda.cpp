@@ -6483,6 +6483,29 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
     initialized = true;
   }
 
+  if ( store == -1 && initialized )
+  {
+    // deallocate and leave
+    printfQuda("# [performGFlowAdjoint] run clean-up\n");
+
+    for( int i = 0; i < store; i++)
+    {
+      delete gFlowA[i];
+    }
+    free ( gFlowA );
+    return;
+  }
+
+  // TEST 
+  // single call to one adjoint flow step
+  // first without fermion flow
+  smear_param->n_steps = mb;
+  copyExtendedGauge ( *(gFlowA[store-1]), *(gFlowA[store]), QUDA_CUDA_FIELD_LOCATION);
+  gFlowA[store-1]->exchangeGhost(); // check, whether halo exchange is necessary at this point
+  performGFlowStepAdjoint ( NULL, NULL, gFlowA[store-1], inv_param, smear_param, 1, 0 );
+  // up to now this operation will not be seen; for testing copy back to gFlowA[store]
+
+#if 0
   if ( store == 0 )
   {
     for ( int i = 0; i < mb; i++ )
@@ -6517,6 +6540,9 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
 
     }  // end of loop on blocks
   }  // end of if store == 0, level of blocking
+
+#endif
+
 
   return;
 }

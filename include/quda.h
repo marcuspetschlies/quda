@@ -1649,7 +1649,7 @@ extern "C" {
    */
   void performGFlownStep(void *h_out, void *h_in, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const init );
 
-  void performGFlowStepAdjoint ( void *h_out, void *h_in, void *gFlowv, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const update_gauge , int const update_fermion);
+  // void performGFlowStepAdjoint ( void *h_out, void *h_in, void *gFlowv, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const update_gauge , int const update_fermion);
 
   void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const mb, int const nb, int const store );
 

@@ -365,6 +365,7 @@ namespace quda
       cache_path += "/tunecache.tsv";
       cache_file.open(cache_path.c_str());
 
+
       if (cache_file) {
 
         if (!cache_file.good()) errorQuda("Bad format in %s", cache_path.c_str());
@@ -410,7 +411,7 @@ namespace quda
                 cache_path.c_str());
 
       } else {
-        warningQuda("Cache file not found.  All kernels will be re-tuned (if tuning is enabled).");
+        warningQuda("Cache file %s not found.  All kernels will be re-tuned (if tuning is enabled).\n", cache_path.c_str() );
       }
     }
 

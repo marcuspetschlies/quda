@@ -153,6 +153,13 @@ namespace quda
           Laplace<decltype(arg)> laplace(arg, out, in);
 
           dslash::DslashPolicyTune<decltype(laplace)> policy(laplace, in, in.VolumeCB(), in.GhostFaceCB(), profile);
+	} else if (in.Nspin() == 4) {
+          constexpr int nDim = 4;
+          constexpr int nSpin = 4;
+          LaplaceArg<Float, nSpin, nColor, nDim, recon> arg(out, in, U, dir, a, b, x, parity, dagger, comm_override);
+          Laplace<decltype(arg)> laplace(arg, out, in);
+
+          dslash::DslashPolicyTune<decltype(laplace)> policy(laplace, in, in.VolumeCB(), in.GhostFaceCB(), profile);
         } else {
           errorQuda("Unsupported nSpin= %d", in.Nspin());
         }

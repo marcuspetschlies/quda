@@ -1675,6 +1675,19 @@ extern "C" {
   void performWFlowQuda(QudaGaugeSmearParam *smear_param, QudaGaugeObservableParam *obs_param);
 
   /**
+   * Performs adjoint gradient flow on gaugeFlowed and fermion field h_in, store in h_out
+   * @param[in] smear_param Parameter struct that defines the computation parameters
+   * @param[in] mp, nb Parameters for hierarchical recursion scheme for the gauge field
+   * @param[in] store Flag for updating gaugeFlowed or not
+   * @param[in] h_in Input fermion field 
+   * @param[out] output fermion field
+   */
+  void performGFlowAdjoint ( void *h_out, void *h_in, \
+		  QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const mb, int const nb, int const store );
+
+
+
+  /**
    * @brief Calculates a variety of gauge-field observables.  If a
    * smeared gauge field is presently loaded (in gaugeSmeared) the
    * observables are computed on this, else the resident gauge field

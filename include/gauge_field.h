@@ -113,6 +113,7 @@ namespace quda {
       case QUDA_SU3_LINKS:
       case QUDA_GENERAL_LINKS:
       case QUDA_SMEARED_LINKS:
+      case QUDA_FLOWED_LINKS:
       case QUDA_MOMENTUM_LINKS: nFace = 1; break;
       case QUDA_THREE_LINKS: nFace = 3; break;
       default: errorQuda("Error: invalid link type(%d)\n", link_type);

@@ -816,7 +816,10 @@ void saveGaugeQuda(void *h_gauge, QudaGaugeParam *param)
 
   cpuGauge.copy(*cudaGauge);
 
-  if (param->type == QUDA_SMEARED_LINKS) { delete cudaGauge; }
+  if ( ( param->type == QUDA_SMEARED_LINKS ) || ( param->type == QUDA_FLOWED_LINKS ) ) 
+  { 
+    delete cudaGauge; 
+  }
 }
 
 void loadSloppyCloverQuda(const QudaPrecision prec[]);
@@ -1029,6 +1032,7 @@ void freeGaugeQuda(void)
   freeUniqueGaugeQuda(QUDA_ASQTAD_FAT_LINKS);
   freeUniqueGaugeQuda(QUDA_ASQTAD_LONG_LINKS);
   freeUniqueGaugeQuda(QUDA_SMEARED_LINKS);
+  freeUniqueGaugeQuda(QUDA_FLOWED_LINKS);
 
   // Need to merge extendedGaugeResident and gaugeFatPrecise/gaugePrecise
   if (extendedGaugeResident) {
@@ -5115,6 +5119,255 @@ void performWFlowQuda(QudaGaugeSmearParam *smear_param, QudaGaugeObservableParam
 
 
 // ******************************************************************
+// ******************************************************************
+
+// ******************************************************************
+// * Gradient flow for gauge + fermion field
+// ******************************************************************
+void performGFlowForward ( void *h_out, void *h_in, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const update_gauge )
+{
+  auto profile = pushProfile(profileGFlow);
+  pushOutputPrefix("performGFlowQuda: ");
+
+  if (gaugeFlowed == nullptr) errorQuda("Flowed gauge field must be loaded");
+
+  GaugeFieldParam gParamEx( *gaugeFlowed );
+  auto *gaugeAux  = GaugeField::Create(gParamEx);
+  auto *gaugeAux2 = GaugeField::Create(gParamEx);
+
+  GaugeFieldParam gParam( *gaugeFlowed );
+  gParam.reconstruct = QUDA_RECONSTRUCT_NO; // temporary field is not on manifold so cannot use reconstruct
+  // gParam.create = QUDA_NULL_FIELD_CREATE; ???
+  auto *gaugeTemp = GaugeField::Create(gParam);
+
+  GaugeField *gin  = gaugeAux2;
+  GaugeField *gout = gaugeAux;
+
+  // ******************************************************
+  // * set gin gauge field
+  // ******************************************************
+  copyExtendedGauge (*gin, *gaugeFlowed, QUDA_CUDA_FIELD_LOCATION);
+  gaugeFlowed->exchangeExtendedGhost( gin->R() );
+
+  // ******************************************************
+  // * observables for input gauge field
+  // ******************************************************
+  QudaGaugeObservableParam param = newQudaGaugeObservableParam();
+  param.compute_plaquette = QUDA_BOOLEAN_TRUE;
+  param.compute_qcharge   = QUDA_BOOLEAN_FALSE;
+  param.su_project        = QUDA_BOOLEAN_FALSE;
+
+  // if (getVerbosity() >= QUDA_SUMMARIZE)
+  {
+    gaugeObservables(*gin, param );
+
+    printfQuda("performGFlowForward in flow t, plaquette gin \n");
+    printfQuda("performGFlowForward %le %.16e\n", 0.0, param.plaquette[0] );
+  }
+
+  // ******************************************************
+  // * helper gauge field for Laplace operator
+  // *
+  // * Can we not use one of the already existing gauge fields
+  // * for that ???
+  // ******************************************************
+  GaugeField *precise = nullptr;
+  {
+    // GaugeFieldParam gParam ( *gaugeFlowed );
+    GaugeFieldParam gParam(*gaugePrecise);
+    gParam.create = QUDA_NULL_FIELD_CREATE;
+    precise = new GaugeField(gParam);
+    // copyExtendedGauge(*precise, *gin, QUDA_CUDA_FIELD_LOCATION);
+    // precise->exchangeGhost();
+  }
+
+  // ******************************************************
+  // * spinor fields
+  // ******************************************************
+  ColorSpinorParam cpuParam(h_in, *inv_param, precise->X(), false, inv_param->input_location);
+  ColorSpinorField in_h(cpuParam);
+
+  ColorSpinorParam cudaParam(cpuParam, *inv_param, QUDA_CUDA_FIELD_LOCATION);
+  ColorSpinorField in(cudaParam);
+  in = in_h;
+
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+  {
+    double cpu = blas::norm2(in_h);
+    double gpu = blas::norm2(in);
+    printfQuda("performGFlowForward In CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+  }
+
+  cudaParam.create = QUDA_NULL_FIELD_CREATE;
+  ColorSpinorField out(cudaParam);
+
+  int parity = 0;
+
+  // Computes out(x) = -8 * in(x) + \sum_mu ( U_{-\mu}(x)in(x+mu) + U^\dagger_mu(x-mu)in(x-mu)) )
+  double a =  1.;
+  double b = -8.;
+
+  int comm_dim[4] = { };
+  // switch on comms for 4 directions, we use 4-dim Laplacian below
+  for (int i = 0; i < 4; i++) {
+    comm_dim[i] = comm_dim_partitioned(i);
+  }
+
+  printfQuda("comm_dim = %2d %2d %2d %2d\n", comm_dim[0], comm_dim[1], comm_dim[2], comm_dim[3] );
+      
+  // auxilliary fermion fields
+  ColorSpinorField f_temp0 ( cudaParam );
+  ColorSpinorField f_temp1 ( cudaParam );
+  ColorSpinorField f_temp2 ( cudaParam );
+  ColorSpinorField f_temp3 ( cudaParam );
+  ColorSpinorField f_temp4 ( cudaParam );
+
+  // blas::copy ( f_temp3, in );
+  f_temp3 = in;
+
+  // ******************************************************
+  // loop, iterations of gf
+  // ******************************************************
+  for (unsigned int i = 0; i < smear_param->n_steps; i++) {
+
+    if ( i > 0 ) std::swap ( gin, gout ); // output from prior step becomes input for next step
+
+    // init auxilliary fields 0 - 2 as 3 = in field
+    f_temp0 = f_temp3;
+    f_temp1 = f_temp3;
+    f_temp2 = f_temp3;
+ 
+    // ******************************************************
+    // * STEP 1
+    // ******************************************************
+
+    // [4] = Laplace [0]
+    // gin is current updated field, gout from last step in prev. iteration
+    // ******************************************************
+    // * here and below this maybe brute force:
+    // * we exchange gauge field used in ApplyLapalace 
+    // * each time by hand right before the call to ApplyLaplace
+    // ******************************************************
+    copyExtendedGauge(*precise, *gin, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
+    ApplyLaplace ( f_temp4, f_temp0, *precise, 4, a, b, f_temp0, parity, false, comm_dim, profileGFlow );
+
+    // [0] = [4] = Laplace 0 = Laplace 3
+    // blas::copy(f_temp0, f_temp4);
+    f_temp0 = f_temp4;
+
+    // [1] <- epsilon/4 x [0] + [1] = [3] + epsilon /4 x Laplace [3]
+    blas::axpy( smear_param->epsilon/4., f_temp0, f_temp1);
+
+    // apply 1st step of gauge field flow part
+    WFlowStep ( *gout, *gaugeTemp, *gin, smear_param->epsilon, smear_param->smear_type, 1);
+
+    // ******************************************************
+    // * STEP 2
+    // ******************************************************
+    
+    // [3] <- [1]
+    // blas::copy(f_temp3, f_temp1);
+    f_temp3 = f_temp1;
+    
+    // [4] <- Laplace [1]
+    // gout contains gauge field at current flow step
+    copyExtendedGauge(*precise, *gout, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
+    ApplyLaplace ( f_temp4, f_temp1, *precise, 4, a, b, f_temp1, parity, false, comm_dim, profileGFlow );
+
+    // [1] <- [4]
+    // blas::copy(f_temp1, f_temp4);
+    f_temp1 =  f_temp4;
+
+    // [2] <- 8/9 x epsilon x [1] + [2]
+    blas::axpy (  smear_param->epsilon*8./9., f_temp1, f_temp2 );
+
+    // [2] <- -2/9 x epsilon x [0] + [2]
+    blas::axpy ( -smear_param->epsilon*2./9., f_temp0, f_temp2 );
+
+        
+    // apply 2nd step of gauge field flow part
+    WFlowStep ( *gin, *gaugeTemp, *gout, smear_param->epsilon, smear_param->smear_type, 2);
+
+    // ******************************************************
+    // * STEP 3
+    // ******************************************************
+    
+    // [4] <- Laplace [2]
+    // now gin is gauge field at current flow step
+    copyExtendedGauge(*precise, *gin, QUDA_CUDA_FIELD_LOCATION);
+    precise->exchangeGhost();
+    ApplyLaplace ( f_temp4, f_temp2, *precise, 4, a, b, f_temp2, parity, false, comm_dim, profileGFlow );
+    
+    // [2] <- [4] = Laplace [2]
+    // blas::copy ( f_temp2, f_temp4 );
+    f_temp2 = f_temp4;
+    
+    // [3] <- 3/4 x epsilon x [2] + [3]
+    blas::axpy ( smear_param->epsilon*3./4., f_temp2, f_temp3 );
+
+    out = f_temp3;
+
+    // apply 3rd step of gauge field flow part
+    WFlowStep ( *gout, *gaugeTemp, *gin, smear_param->epsilon, smear_param->smear_type, 3);
+
+    //if (getVerbosity() >= QUDA_DEBUG_VERBOSE) 
+    {
+      gaugeObservables( *gout, param );
+      printfQuda("performGFlowForward flow t, plaquette gout\n");
+      printfQuda("performGFlowForward %le %.16e\n", i * smear_param->epsilon, param.plaquette[0] );
+    }
+
+  }  /* end of one iteration of GF application */
+
+  // ****************************
+  // * update gauge field, if wanted
+  // ****************************
+  if ( update_gauge ) 
+  {
+    printfQuda("performGFlowForward update resident gaugeFlowed\n");
+
+    copyExtendedGauge( *gaugeFlowed, *gout, QUDA_CUDA_FIELD_LOCATION);
+    gaugeFlowed->exchangeExtendedGhost( gaugeFlowed->R() );
+  }
+      
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE )
+  {
+    gaugeObservables( *gaugeFlowed, param );
+    printfQuda("performGFlowForward out flow t, plaquette gaugeFlowed\n");
+    printfQuda("performGFlowForward %le %.16e\n", smear_param->n_steps * smear_param->epsilon, param.plaquette[0] );
+  }
+
+  cpuParam.v = h_out;
+  cpuParam.location = inv_param->output_location;
+  ColorSpinorField out_h(cpuParam);
+  out_h = out;
+
+  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+  {
+    double cpu = blas::norm2(out_h);
+    double gpu = blas::norm2(out);
+    printfQuda("performGFlowForward Out CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+  }
+
+  delete gaugeTemp;
+  delete gaugeAux;
+  delete gaugeAux2;
+
+  delete precise;
+
+  // delete out_h;
+  // delete in_h;
+
+
+  // popVerbosity();
+
+  popOutputPrefix();
+
+}  /* end of performGFlowForward */
+
+// ******************************************************************
 // * Gradient flow for gauge + fermion field
 // *
 // * adjoint flow
@@ -5313,7 +5566,7 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
 
 
     // [2] =  Laplace_2 [3], with auxilliary field [0]
-    ApplyLaplace ( f_temp2, f_temp3, *precise, 4, a, b, f_temp3, parity, false, comm_dim, profileLaplace );
+    ApplyLaplace ( f_temp2, f_temp3, *precise, 4, a, b, f_temp3, parity, false, comm_dim, profileGFlowAdjoint );
 
     // [2] = [2] x 3/4 ( + 0 x [2] )
     blas::axpby ( smear_param->epsilon*3./4., f_temp2, 0., f_temp2 );
@@ -5326,7 +5579,7 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
     // [4] <- Laplace_1 [2], with auxilliary field [0]
     copyExtendedGauge(*precise, *gint, QUDA_CUDA_FIELD_LOCATION);
     precise->exchangeGhost();
-    ApplyLaplace ( f_temp4, f_temp2, *precise, 4, a, b, f_temp2, parity, false, comm_dim, profileLaplace );
+    ApplyLaplace ( f_temp4, f_temp2, *precise, 4, a, b, f_temp2, parity, false, comm_dim, profileGFlowAdjoint );
 
     // [1] <- [3]
     f_temp1 =  f_temp3;
@@ -5345,7 +5598,7 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
     // [4] <- Laplace_0 [0], with auxilliary field [3]
     copyExtendedGauge(*precise, *gin, QUDA_CUDA_FIELD_LOCATION);
     precise->exchangeGhost();
-    ApplyLaplace ( f_temp4, f_temp0, *precise, 4, a, b, f_temp0, parity, false, comm_dim, profileLaplace );
+    ApplyLaplace ( f_temp4, f_temp0, *precise, 4, a, b, f_temp0, parity, false, comm_dim, profileGFlowAdjoint );
     
     // [0] <- [1]
     f_temp0 = f_temp1;
@@ -5414,6 +5667,11 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
     // profileGFlowAdjoint.TPSTART(QUDA_PROFILE_TOTAL);
 
     auto profile = pushProfile(profileGFlowAdjoint);
+
+    // can we add the following, in line with recursive calls?
+    // pushOutputPrefix("performGFlowAdjoint: ");
+    // popOutputPrefix();
+
     stop_timer_at_store = store;
 
     // gauge fields

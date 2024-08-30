@@ -5634,6 +5634,9 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
 // * wrapper for adjoint flow step
 // *
 // * store is counter for recursive calls
+// *
+// * add a restart parameter, which activates copying gaugePrecise back to 
+// * gaugeFlowed without resorting to loadGaugeQuda with free / allocate
 // ******************************************************************
 
 void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const mb, int const nb, int const store )
@@ -5648,6 +5651,28 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   static int stop_timer_at_store = 0;
 
   static ColorSpinorField *in, *out;
+
+  // ******************************************************************
+  // * clean up and return
+  // ******************************************************************
+  if ( store == -1 && initialized )
+  {
+    // deallocate and leave
+    printfQuda("# [performGFlowAdjoint] run clean-up\n");
+
+    for( int i = 0; i < stop_timer_at_store; i++)
+    {
+      delete gFlowA[i];
+    }
+    free ( gFlowA ); gFlowA = nullptr;
+    delete in;
+    delete out;
+
+    initialized = false;
+
+    printfQuda("# [performGFlowAdjoint] done clean-up\n");
+    return;
+  }
 
   ColorSpinorParam cpuParam  ( h_in, *inv_param, gaugePrecise->X(), false, inv_param->input_location);
   ColorSpinorParam cudaParam ( cpuParam, *inv_param, QUDA_CUDA_FIELD_LOCATION);
@@ -5680,7 +5705,21 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
     for( int i = 0; i < store; i++)
     {
       // gFlowA[i] = createExtendedGauge(*gaugeFlowed, R, profileGauge);
+      // verified with the following
       gFlowA[i] = createExtendedGauge(*gaugePrecise, R, profileGauge);
+
+#if 0
+      // TEST
+      GaugeFieldParam gParamEx( *gaugeFlowed );
+      gParamEx.ghostExchange = QUDA_GHOST_EXCHANGE_EXTENDED;
+      gParamEx.pad = 0;
+      gParamEx.nFace = 1;
+      for (int d = 0; d < 4; d++) {
+        gParamEx.x[d] += 2 * R[d];
+        gParamEx.r[d] = R[d];
+      }
+      gFlowA[i] = GaugeField::Create(gParamEx);
+#endif  // of if 0
     }
     gFlowA[store] = gaugeFlowed;
 
@@ -5708,7 +5747,7 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
 
     double cpu = blas::norm2( in_h );
     double gpu = blas::norm2( *in  );
-    printfQuda("# [performGFlownStepAdjoint] In CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+    printfQuda("# [performGFlowAdjoint] In CPU %25.16e CUDA %25.16e\n", cpu, gpu);
 
     cudaParam.create = QUDA_NULL_FIELD_CREATE;
     out = new ColorSpinorField(cudaParam);
@@ -5716,27 +5755,6 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
     initialized = true;
     printfQuda("# [performGFlowAdjoint] done initialization\n");
   }  // end of if !initialized
-
-  // ******************************************************************
-  // * clean up and return
-  // ******************************************************************
-  if ( store == -1 && initialized )
-  {
-    // deallocate and leave
-    printfQuda("# [performGFlowAdjoint] run clean-up\n");
-
-    for( int i = 0; i < store; i++)
-    {
-      delete gFlowA[i];
-    }
-    free ( gFlowA ); gFlowA = NULL;
-    delete in;
-    delete out;
-
-    printfQuda("# [performGFlowAdjoint] done clean-up\n");
-    return;
-  }
-
 
   // ******************************************************************
   // * recursive scheme

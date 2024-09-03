@@ -5653,6 +5653,23 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   static ColorSpinorField *in, *out;
 
   // ******************************************************************
+  // * check gaugeFlowed is initialized
+  // ******************************************************************
+  if ( gaugeFlowed == nullptr )
+  {
+    errorQuda("gaugeFlowed not initialized");
+  }
+
+  // ******************************************************************
+  // * check for restart from gaugePrecise
+  // ******************************************************************
+  if ( smear_param->restart )
+  {
+    // copy gaugePrecise to gaugeFlowed staying on device
+    errorQuda("restart not implemented yet");
+  }
+
+  // ******************************************************************
   // * clean up and return
   // ******************************************************************
   if ( store == -1 && initialized )
@@ -5721,7 +5738,6 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
       gFlowA[i] = GaugeField::Create(gParamEx);
 #endif  // of if 0
     }
-    gFlowA[store] = gaugeFlowed;
 
 #if 0
     gaugeObservables( *(gFlowA[store]), param );
@@ -5755,6 +5771,13 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
     initialized = true;
     printfQuda("# [performGFlowAdjoint] done initialization\n");
   }  // end of if !initialized
+
+  // gFlowA is initialized at this point,
+  // so we can set the last element to
+  // gaugeFlowed
+
+  printfQuda("# [performGFlowAdjoint] resetting gFlowA[%d] at store = %d\n", stop_timer_at_store, store );
+  gFlowA[stop_timer_at_store] = gaugeFlowed;
 
   // ******************************************************************
   // * recursive scheme

@@ -5652,21 +5652,15 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
 
   static ColorSpinorField *in, *out;
 
+  printfQuda("# [performGFlowAdjoint] start at store = %d    %s %d\n", store, __FILE__, __LINE__ );
+
+
   // ******************************************************************
   // * check gaugeFlowed is initialized
   // ******************************************************************
   if ( gaugeFlowed == nullptr )
   {
     errorQuda("gaugeFlowed not initialized");
-  }
-
-  // ******************************************************************
-  // * check for restart from gaugePrecise
-  // ******************************************************************
-  if ( smear_param->restart )
-  {
-    // copy gaugePrecise to gaugeFlowed staying on device
-    errorQuda("restart not implemented yet");
   }
 
   // ******************************************************************
@@ -5772,6 +5766,20 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
     printfQuda("# [performGFlowAdjoint] done initialization\n");
   }  // end of if !initialized
 
+  // ******************************************************************
+  // * check for restart from gaugePrecise
+  // ******************************************************************
+  if ( smear_param->restart )
+  {
+    // copy gaugePrecise to gaugeFlowed staying on device
+    // errorQuda("restart not implemented yet");
+
+    printfQuda("# [performGFlowAdjoint] resetting gaugeFlowed to gaugePrecise     %s %d\n", __FILE__, __LINE__ );
+
+    freeUniqueGaugeQuda( QUDA_FLOWED_LINKS );
+    gaugeFlowed = createExtendedGauge(*gaugePrecise, R, profileGauge);
+  }
+
   // gFlowA is initialized at this point,
   // so we can set the last element to
   // gaugeFlowed
@@ -5876,6 +5884,9 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   }
 #if 0
 #endif  // of if 0
+
+  printfQuda("# [performGFlowAdjoint] end with store = %d    %s %d\n", store, __FILE__, __LINE__ );
+
   return;
 }
 

@@ -5127,9 +5127,18 @@ void performWFlowQuda(QudaGaugeSmearParam *smear_param, QudaGaugeObservableParam
 void performGFlowForward ( void *h_out, void *h_in, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const update_gauge )
 {
   auto profile = pushProfile(profileGFlow);
-  pushOutputPrefix("performGFlowQuda: ");
+  pushOutputPrefix("# [performGFlowForward] ");
 
   if (gaugeFlowed == nullptr) errorQuda("Flowed gauge field must be loaded");
+
+  if ( smear_param->restart )
+  {
+    // copy gaugePrecise to gaugeFlowed staying on device
+    printfQuda("resetting gaugeFlowed to gaugePrecise     %s %d\n", __FILE__, __LINE__ );
+
+    freeUniqueGaugeQuda( QUDA_FLOWED_LINKS );
+    gaugeFlowed = createExtendedGauge(*gaugePrecise, R, profileGauge);
+  }
 
   GaugeFieldParam gParamEx( *gaugeFlowed );
   auto *gaugeAux  = GaugeField::Create(gParamEx);
@@ -5157,12 +5166,11 @@ void performGFlowForward ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   param.compute_qcharge   = QUDA_BOOLEAN_FALSE;
   param.su_project        = QUDA_BOOLEAN_FALSE;
 
-  // if (getVerbosity() >= QUDA_SUMMARIZE)
+  if (getVerbosity() >= QUDA_SUMMARIZE)
   {
     gaugeObservables(*gin, param );
 
-    printfQuda("performGFlowForward in flow t, plaquette gin \n");
-    printfQuda("performGFlowForward %le %.16e\n", 0.0, param.plaquette[0] );
+    printfQuda("flow time %le   plaquette gin %.16e\n", 0.0, param.plaquette[0] );
   }
 
   // ******************************************************
@@ -5191,11 +5199,11 @@ void performGFlowForward ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   ColorSpinorField in(cudaParam);
   in = in_h;
 
-  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
   {
     double cpu = blas::norm2(in_h);
     double gpu = blas::norm2(in);
-    printfQuda("performGFlowForward In CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+    printfQuda("In CPU %25.16e CUDA %25.16e\n", cpu, gpu);
   }
 
   cudaParam.create = QUDA_NULL_FIELD_CREATE;
@@ -5213,8 +5221,11 @@ void performGFlowForward ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
     comm_dim[i] = comm_dim_partitioned(i);
   }
 
-  printfQuda("comm_dim = %2d %2d %2d %2d\n", comm_dim[0], comm_dim[1], comm_dim[2], comm_dim[3] );
-      
+  if (getVerbosity() >= QUDA_SUMMARIZE)
+  {
+    printfQuda("comm_dim = %2d %2d %2d %2d\n", comm_dim[0], comm_dim[1], comm_dim[2], comm_dim[3] );
+  }
+
   // auxilliary fermion fields
   ColorSpinorField f_temp0 ( cudaParam );
   ColorSpinorField f_temp1 ( cudaParam );
@@ -5309,14 +5320,18 @@ void performGFlowForward ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
 
     out = f_temp3;
 
+    if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+    {
+      printfQuda("step %d   out %25.16e    f_temp3 %25.16e\n", i, blas::norm2(out), blas::norm2(f_temp3) );
+    }
+
     // apply 3rd step of gauge field flow part
     WFlowStep ( *gout, *gaugeTemp, *gin, smear_param->epsilon, smear_param->smear_type, 3);
 
-    //if (getVerbosity() >= QUDA_DEBUG_VERBOSE) 
+    if (getVerbosity() >= QUDA_DEBUG_VERBOSE) 
     {
       gaugeObservables( *gout, param );
-      printfQuda("performGFlowForward flow t, plaquette gout\n");
-      printfQuda("performGFlowForward %le %.16e\n", i * smear_param->epsilon, param.plaquette[0] );
+      printfQuda("flow time %le    plaquette gout %.16e\n", i * smear_param->epsilon, param.plaquette[0] );
     }
 
   }  /* end of one iteration of GF application */
@@ -5326,17 +5341,16 @@ void performGFlowForward ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   // ****************************
   if ( update_gauge ) 
   {
-    printfQuda("performGFlowForward update resident gaugeFlowed\n");
+    if (getVerbosity() >= QUDA_SUMMARIZE) printfQuda("update resident gaugeFlowed\n");
 
     copyExtendedGauge( *gaugeFlowed, *gout, QUDA_CUDA_FIELD_LOCATION);
     gaugeFlowed->exchangeExtendedGhost( gaugeFlowed->R() );
   }
       
-  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE )
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE )
   {
     gaugeObservables( *gaugeFlowed, param );
-    printfQuda("performGFlowForward out flow t, plaquette gaugeFlowed\n");
-    printfQuda("performGFlowForward %le %.16e\n", smear_param->n_steps * smear_param->epsilon, param.plaquette[0] );
+    printfQuda("out flow time %le    plaquette gaugeFlowed %.16e\n", smear_param->n_steps * smear_param->epsilon, param.plaquette[0] );
   }
 
   cpuParam.v = h_out;
@@ -5344,11 +5358,11 @@ void performGFlowForward ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   ColorSpinorField out_h(cpuParam);
   out_h = out;
 
-  // if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
+  if (getVerbosity() >= QUDA_DEBUG_VERBOSE)
   {
     double cpu = blas::norm2(out_h);
     double gpu = blas::norm2(out);
-    printfQuda("performGFlowForward Out CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+    printfQuda("Out CPU %25.16e CUDA %25.16e\n", cpu, gpu);
   }
 
   delete gaugeTemp;
@@ -5412,8 +5426,11 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
   copyExtendedGauge (*gw1, *gFlow, QUDA_CUDA_FIELD_LOCATION);
   gw1->exchangeExtendedGhost( gw1->R() );
 
-  gaugeObservables( *gw1, param );
-  printfQuda ("# [performGFlownStepAdjoint] passed gauge field gw1 plaquette %25.16e\n", param.plaquette[0] );
+  if (getVerbosity() > QUDA_SUMMARIZE)
+  {
+    gaugeObservables( *gw1, param );
+    printfQuda ("# [performGFlownStepAdjoint] passed gauge field gw1 plaquette %25.16e\n", param.plaquette[0] );
+  }
 
   // ******************************************************
   // * helper gauge field for Laplace operator
@@ -5456,16 +5473,18 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
       // apply gauge field gradient flow (step_type = 0, so all steps)
       WFlowStep ( *gout, *gaugeTemp, *gin, smear_param->epsilon, smear_param->smear_type, 0);
 
-      // TEST: show plaquette at entry to fermion field update
-      gaugeObservables( *gout, param );
-      printfQuda ("# [performGFlownStepAdjoint] niter %3d iter %3u plaquette %25.16e\n", smear_param->n_steps, i, param.plaquette[0] );
-
+      if (getVerbosity() > QUDA_SUMMARIZE)
+      {
+        // TEST: show plaquette at entry to fermion field update
+        gaugeObservables( *gout, param );
+        printfQuda ("# [performGFlownStepAdjoint] niter %3d iter %3u plaquette %25.16e\n", smear_param->n_steps, i, param.plaquette[0] );
+      }
  
     }  // end of loop on n_steps GF iterations
      
     if ( !update_fermion )
     {
-      printfQuda("# [performGFlownStepAdjoint] NO fermion update => update gFlow\n");
+        if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("# [performGFlownStepAdjoint] NO fermion update => update gFlow\n");
       // copy to gFlow
       copyExtendedGauge( *gFlow, *gout, QUDA_CUDA_FIELD_LOCATION);
       // to be safe, exchange boundary fields
@@ -5492,7 +5511,7 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
       comm_dim[i] = comm_dim_partitioned(i);
     }
 
-    printfQuda("# [performGFlownStepAdjoint] comm_dim = %2d %2d %2d %2d\n", comm_dim[0], comm_dim[1], comm_dim[2], comm_dim[3] );
+    if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("# [performGFlownStepAdjoint] comm_dim = %2d %2d %2d %2d\n", comm_dim[0], comm_dim[1], comm_dim[2], comm_dim[3] );
      
     // auxilliary fermion fields
     ColorSpinorField f_temp0 ( cudaParam );
@@ -5508,9 +5527,12 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
     // after swap gin will point to currently flowed gauge field
     std::swap ( gin, gout );
 
-    // TEST: show plaquette at entry to fermion field update
-    gaugeObservables( *gin, param );
-    printfQuda ("# [performGFlownStepAdjoint] start spinor flow at plaquette %25.16e\n", param.plaquette[0] );
+    if (getVerbosity() > QUDA_SUMMARIZE)
+    {
+      // TEST: show plaquette at entry to fermion field update
+      gaugeObservables( *gin, param );
+      printfQuda ("# [performGFlownStepAdjoint] start spinor flow at plaquette %25.16e\n", param.plaquette[0] );
+    }
 
     // ******************************************************
     // * prepare STEP 1 and STEP 2 gradient flow on gauge field
@@ -5543,18 +5565,20 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
     // precise->exchangeExtendedGhost( precise->R() );
     gout->exchangeExtendedGhost( gout->R() );
 
-    // TEST: show plaquette at entry to fermion field update
-    double plaq[3];
-    gaugeObservables( *gin, param );
-    plaq[0] = param.plaquette[0];
-    gaugeObservables( *gint, param );
-    plaq[1] = param.plaquette[0];
-    gaugeObservables( *gout, param );
-    plaq[2] = param.plaquette[0];
-    gaugeObservables( *precise, param );
-    printfQuda ("# [performGFlownStepAdjoint] Laplace2 at plaquettes %25.16e %25.16e %25.16e %25.16e\n",
-          plaq[0], plaq[1] , plaq[2], param.plaquette[0] );
-
+    if (getVerbosity() > QUDA_SUMMARIZE)
+    {
+      // TEST: show plaquette at entry to fermion field update
+      double plaq[3];
+      gaugeObservables( *gin, param );
+      plaq[0] = param.plaquette[0];
+      gaugeObservables( *gint, param );
+      plaq[1] = param.plaquette[0];
+      gaugeObservables( *gout, param );
+      plaq[2] = param.plaquette[0];
+      gaugeObservables( *precise, param );
+      printfQuda ("# [performGFlownStepAdjoint] Laplace2 at plaquettes %25.16e %25.16e %25.16e %25.16e\n",
+            plaq[0], plaq[1] , plaq[2], param.plaquette[0] );
+    }
 #if 0
     double gpub = blas::norm2( f_temp3 );
     ApplyLaplace ( f_temp2, f_temp3, *precise, 4, a, b, f_temp3, parity, false, comm_dim, profileLaplace );
@@ -5642,17 +5666,19 @@ void performGFlowStepAdjoint ( ColorSpinorField *out, ColorSpinorField *in, Gaug
 void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, QudaGaugeSmearParam *smear_param, int const mb, int const nb, int const store )
 {
 
+  pushOutputPrefix("# [performGFlowAdjoint] ");
+
   // static gauge fields
   // needed for recursion; or pass a list of gauge fields
   // as argument ???
 
   static bool initialized = false;
   static GaugeField ** gFlowA = NULL; 
-  static int stop_timer_at_store = 0;
+  static int stop_timer_at_store = -1;
 
   static ColorSpinorField *in, *out;
 
-  printfQuda("# [performGFlowAdjoint] start at store = %d    %s %d\n", store, __FILE__, __LINE__ );
+  if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("# [performGFlowAdjoint] start at store = %d    %s %d\n", store, __FILE__, __LINE__ );
 
 
   // ******************************************************************
@@ -5664,26 +5690,33 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   }
 
   // ******************************************************************
-  // * clean up and return
+  // * CLEAN UP and return
   // ******************************************************************
-  if ( store == -1 && initialized )
+  if ( store == -1 )
   {
     // deallocate and leave
-    printfQuda("# [performGFlowAdjoint] run clean-up\n");
+    if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("# [performGFlowAdjoint] run clean-up\n");
 
-    for( int i = 0; i < stop_timer_at_store; i++)
+    if ( initialized )
     {
-      delete gFlowA[i];
+      for( int i = 0; i < stop_timer_at_store; i++)
+      {
+        delete gFlowA[i];
+      }
+      free ( gFlowA ); gFlowA = nullptr;
+      delete in;
+      delete out;
     }
-    free ( gFlowA ); gFlowA = nullptr;
-    delete in;
-    delete out;
 
+    stop_timer_at_store = -1;
     initialized = false;
 
-    printfQuda("# [performGFlowAdjoint] done clean-up\n");
+    if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("# [performGFlowAdjoint] done clean-up\n");
     return;
   }
+  // ******************************************************************
+  // * end of CLEAN UP
+  // ******************************************************************
 
   ColorSpinorParam cpuParam  ( h_in, *inv_param, gaugePrecise->X(), false, inv_param->input_location);
   ColorSpinorParam cudaParam ( cpuParam, *inv_param, QUDA_CUDA_FIELD_LOCATION);
@@ -5693,22 +5726,25 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   param.su_project        = QUDA_BOOLEAN_FALSE;
 
   // ******************************************************************
-  // * initialize static variables
+  // * INITIALIZE static variables
   // ******************************************************************
   if ( !initialized  )
   {
-    printfQuda("# [performGFlowAdjoint] run initialization\n");
+    auto profile = pushProfile(profileGFlowAdjoint);
+
+    if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("run initialization\n");
 
     // start timer
     // profileGFlowAdjoint.TPSTART(QUDA_PROFILE_TOTAL);
 
-    auto profile = pushProfile(profileGFlowAdjoint);
 
     // can we add the following, in line with recursive calls?
     // pushOutputPrefix("performGFlowAdjoint: ");
     // popOutputPrefix();
 
     stop_timer_at_store = store;
+    if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("top-level store value %d    %s %d\n", stop_timer_at_store, __FILE__, __LINE__);
+
 
     // gauge fields
     gFlowA = (GaugeField**)malloc ( ( store + 1 ) * sizeof ( GaugeField*) );
@@ -5754,61 +5790,95 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
 
     in = new ColorSpinorField(cudaParam);
     *in = in_h;
-
-    double cpu = blas::norm2( in_h );
-    double gpu = blas::norm2( *in  );
-    printfQuda("# [performGFlowAdjoint] In CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+    
+    // show norm of input field, cpu and gpu
+    if (getVerbosity() > QUDA_SUMMARIZE )
+    {
+      double cpu = blas::norm2( in_h );
+      double gpu = blas::norm2( *in  );
+      printfQuda("at initialization in CPU %25.16e CUDA %25.16e    %s %d\n",
+          cpu, gpu, __FILE__, __LINE__ );
+    }
 
     cudaParam.create = QUDA_NULL_FIELD_CREATE;
     out = new ColorSpinorField(cudaParam);
 
     initialized = true;
-    printfQuda("# [performGFlowAdjoint] done initialization\n");
-  }  // end of if !initialized
+    if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("done initialization\n");
+  }
+  // ******************************************************************
+  // * end of INITIALIZE
+  // ******************************************************************
 
   // ******************************************************************
-  // * check for restart from gaugePrecise
+  // * check for RESTART from gaugePrecise
   // ******************************************************************
-  if ( smear_param->restart )
+  if ( smear_param->restart && ( store == stop_timer_at_store ) )
   {
     // copy gaugePrecise to gaugeFlowed staying on device
-    // errorQuda("restart not implemented yet");
 
-    printfQuda("# [performGFlowAdjoint] resetting gaugeFlowed to gaugePrecise     %s %d\n", __FILE__, __LINE__ );
+    if (getVerbosity() > QUDA_SUMMARIZE)
+    {
+      printfQuda("at store %d resetting gaugeFlowed to gaugePrecise and in to h_in    %s %d\n",
+          store, __FILE__, __LINE__ );
+    }
 
     freeUniqueGaugeQuda( QUDA_FLOWED_LINKS );
     gaugeFlowed = createExtendedGauge(*gaugePrecise, R, profileGauge);
+
+    // generate new in field from h_in
+    //   in already exists on device
+    // ASSUMING: we do not restart, unless we upload a new fermion field
+    ColorSpinorField in_h(cpuParam);
+    *in = in_h;
+  
+    // show norm of input field, cpu and gpu
+    if (getVerbosity() > QUDA_SUMMARIZE && store == stop_timer_at_store )
+    {
+      double cpu = blas::norm2( in_h );
+      double gpu = blas::norm2( *in  );
+      printfQuda("at store %d resetting in CPU %25.16e CUDA %25.16e    %s %d\n",
+          store, cpu, gpu, __FILE__, __LINE__ );
+    }
+
   }
+  // ******************************************************************
+  // * end of RESTART
+  // ******************************************************************
+
+  // no restart after this
+  smear_param->restart = QUDA_BOOLEAN_FALSE;
 
   // gFlowA is initialized at this point,
   // so we can set the last element to
   // gaugeFlowed
-
-  printfQuda("# [performGFlowAdjoint] resetting gFlowA[%d] at store = %d\n", stop_timer_at_store, store );
+  //
+  if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("resetting gFlowA[%d] at store = %d\n", stop_timer_at_store, store );
   gFlowA[stop_timer_at_store] = gaugeFlowed;
 
   // ******************************************************************
-  // * recursive scheme
+  // * RECURSIVE SCHEME
   // ******************************************************************
 
-  printfQuda ("# [performGFlowAdjoint] entering level %d nb %3d mb %3d\n", store, nb, mb );
+  if (getVerbosity() > QUDA_SUMMARIZE) printfQuda ("entering level %d nb %3d mb %3d\n", store, nb, mb );
 
   if ( store == 0 )
   {
-    printfQuda ("# [performGFlowAdjoint] finish level %d nb %3d mb %3d\n", store, nb, mb );
+    if (getVerbosity() > QUDA_SUMMARIZE) printfQuda ("finish level %d nb %3d mb %3d\n", store, nb, mb );
 
     for ( int i = 0; i < mb; i++ )
     {
       // here setting smear_param->nsteps is relevant
       smear_param->n_steps = mb - 1 - i;
 
-      double gpub = blas::norm2( *in  );
-
       performGFlowStepAdjoint ( out, in, gFlowA[store], cudaParam, smear_param, 1, 1 );
 
-      double gpua = blas::norm2( *out  );
-      printfQuda ( "# [performGFlowAdjoint] chi %d nb %3d mb %3d i %3d norm before %25.16e after %25.16e\n", store, nb, mb, i, gpub, gpua );
-
+      if (getVerbosity() > QUDA_SUMMARIZE)
+      {
+        double gpub = blas::norm2( *in  );
+        double gpua = blas::norm2( *out  );
+        printfQuda ( "chi %d nb %3d mb %3d i %3d norm before %25.16e after %25.16e\n", store, nb, mb, i, gpub, gpua );
+      }
       // copy flowed out field to in field
       *in = *out;
     }
@@ -5832,27 +5902,36 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
       // number of GF iteration steps; here block gauge fields
       smear_param->n_steps = niter;
 
-      // TEST: info on call parameters in this block at this level
-      printfQuda ("# [performGFlowAdjoint] store %d block %3d  kb %3d lb %3d mb_new %3d\n", store, ib, kb, lb, mb_new );
+      if (getVerbosity() > QUDA_SUMMARIZE)
+      {
+        // TEST: info on call parameters in this block at this level
+        printfQuda ("store %d block %3d  kb %3d lb %3d mb_new %3d\n", store, ib, kb, lb, mb_new );
 
-      // TEST: check plaquette of field store-1 before iteration
-      gaugeObservables( *(gFlowA[store-1]), param );
-      printfQuda("# [performGFlowAdjoint] plaquette before %25.16e\n", param.plaquette[0] );
+        // TEST: check plaquette of field store-1 before iteration
+        gaugeObservables( *(gFlowA[store-1]), param );
+        printfQuda("plaquette before %25.16e\n", param.plaquette[0] );
+      }
 
       // apply gradient flow, here to gauge field only
       performGFlowStepAdjoint ( NULL, NULL, gFlowA[store-1], cudaParam, smear_param, 1, 0 );
 
-      // TEST: check plaquette of field store-1 after iteration
-      gaugeObservables( *(gFlowA[store-1]), param );
-      printfQuda("# [performGFlowAdjoint] plaquette afer niter %d %25.16e\n", niter, param.plaquette[0] );
+      if (getVerbosity() > QUDA_SUMMARIZE)
+      {
+        // TEST: check plaquette of field store-1 after iteration
+        gaugeObservables( *(gFlowA[store-1]), param );
+        printfQuda("plaquette afer niter %d %25.16e\n", niter, param.plaquette[0] );
 
-      // continue with blocking
-      printfQuda ("# [performGFlowAdjoint] descend level %d ---> %d\n", store, store-1 );
+        // continue with blocking
+        printfQuda ("descend level %d ---> %d\n", store, store-1 );
+      }
 
       performGFlowAdjoint ( h_out, h_in, inv_param, smear_param, mb_new, nb, store-1 );
 
     }  // end of loop on blocks
   }  // end of if store == 0, level of blocking
+  // ******************************************************************
+  // * end of RECURSIVE SCHEME
+  // ******************************************************************
 
 
   // ******************************************************
@@ -5860,32 +5939,34 @@ void performGFlowAdjoint ( void *h_out, void *h_in, QudaInvertParam *inv_param, 
   // ******************************************************
   if ( initialized && ( stop_timer_at_store == store ) )
   {
-
     // ******************************************************
     // store the flowed fermion field back to host
     // ******************************************************
-    printfQuda("# [performGFlowAdjoint] copy fermion field device to host\n" );
+    if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("copy fermion field device to host\n" );
     ColorSpinorParam cpuParam(h_in, *inv_param, gaugePrecise->X(), false, inv_param->input_location);
     cpuParam.v = h_out;
     cpuParam.location = inv_param->output_location;
     ColorSpinorField out_h(cpuParam);
     out_h = *out;
 
-    double cpu = blas::norm2( out_h );
-    double gpu = blas::norm2( *out  );
-    printfQuda("# [performGFlowAdjoint] Out CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+    if (getVerbosity() > QUDA_SUMMARIZE)
+    {
+      double cpu = blas::norm2( out_h );
+      double gpu = blas::norm2( *out  );
+      printfQuda("Out CPU %25.16e CUDA %25.16e\n", cpu, gpu);
+    }
 
     // ******************************************************
     // stop timer when exiting from highest level
     // ******************************************************
-    printfQuda ("# [performGFlowAdjoint] stop timer at %d\n", stop_timer_at_store );
+      if (getVerbosity() > QUDA_SUMMARIZE) printfQuda ("stop timer at %d\n", stop_timer_at_store );
 
     // profileGFlowAdjoint.TPSTOP(QUDA_PROFILE_TOTAL);
   }
-#if 0
-#endif  // of if 0
 
-  printfQuda("# [performGFlowAdjoint] end with store = %d    %s %d\n", store, __FILE__, __LINE__ );
+  if (getVerbosity() > QUDA_SUMMARIZE) printfQuda("end with store = %d    %s %d\n", store, __FILE__, __LINE__ );
+
+  popOutputPrefix();
 
   return;
 }
